@@ -13,7 +13,7 @@ a tool means writing one file and adding one line.
 | `VpnController.qml` | Owns the backends, picks the active one, enforces exclusivity, fetches the public IP |
 | `ProtonBackend.qml` | Proton VPN, via the `protonvpn` CLI |
 | `MullvadBackend.qml` | Mullvad, via the `mullvad` CLI |
-| `OpenVpnBackend.qml` | OpenVPN, via NetworkManager |
+| `NetworkManagerBackend.qml` | OpenVPN and WireGuard, via NetworkManager |
 | `Model.js` | Pure parsing and row-building. No QML, no side effects |
 
 ## The backend contract
@@ -25,7 +25,7 @@ duck-types, so a backend that omits something simply renders as blank.
 
 | Property | Meaning |
 |----------|---------|
-| `backendId` | Stable key used by settings and IPC (`proton`, `mullvad`, `openvpn`) |
+| `backendId` | Stable key used by settings and IPC (`proton`, `mullvad`, `networkmanager`) |
 | `label` | Name on the switcher chip and hero |
 | `glyph` | Nerd Font character for the hero icon |
 | `supportsFilter`, `filterPlaceholder` | Whether the panel shows its filter field |
@@ -52,9 +52,9 @@ duck-types, so a backend that omits something simply renders as blank.
 `toggles`.
 
 `toggleConnection()` is the backend's own idea of a default connection — Proton
-picks the fastest server; Mullvad reuses its stored relay constraint; OpenVPN
-connects the only profile if there is exactly one, and otherwise asks the user to
-pick.
+picks the fastest server; Mullvad reuses its stored relay constraint;
+NetworkManager connects the only profile if there is exactly one, and otherwise
+asks the user to pick.
 
 A backend may also expose `lockdownMode`, meaning "this tool blocks all traffic
 while it is disconnected". The controller warns about it before tearing that
@@ -139,14 +139,40 @@ tunnel is down; the setting itself is read separately with
 `mullvad lockdown-mode get`, because the case that matters — Mullvad connected,
 another backend about to take over — is exactly when the payload omits it.
 
-**OpenVPN discovery.** Two passes. `nmcli -t -f NAME,UUID,TYPE,ACTIVE connection
-show` gives every VPN-typed connection; a second call over just those uuids
+**Why OpenVPN and WireGuard share one backend.** Same listing call, same
+`connection up` verb, same teardown, same secret-agent problem, and no settings
+of their own on either side. Two chips would have meant two views of one
+manager. NetworkManager types them differently — OpenVPN is a `vpn` connection
+with a service-type plugin behind it, WireGuard is its own connection type with
+the keys in the profile — and that difference is carried on each row as `kind`,
+which picks the glyph and decides whether the username check applies.
+
+**NetworkManager discovery.** Two passes. `nmcli -t -f
+NAME,UUID,TYPE,ACTIVE,FILENAME connection show` gives every connection; the
+`vpn` and `wireguard` rows are kept. A second call over just the `vpn` uuids
 fetches `vpn.service-type` (to keep only OpenVPN ones) and `vpn.data` (to check
-for a username). The username matters because NetworkManager keeps it outside
-the secrets store, so `nmcli --ask` never prompts for it — a profile without one
-authenticates as the empty user and the server answers `AUTH_FAILED`. The
-backend detects that case and reports the fix instead of opening a terminal
-that cannot succeed.
+for a username). WireGuard rows skip that pass entirely — they are already known
+to be WireGuard and have no username to be missing. The username matters because
+NetworkManager keeps it outside the secrets store, so `nmcli --ask` never
+prompts for it — a profile without one authenticates as the empty user and the
+server answers `AUTH_FAILED`. The backend detects that case and reports the fix
+instead of opening a terminal that cannot succeed.
+
+**FILENAME is what keeps other tools' tunnels out.** When something brings up a
+WireGuard interface itself — Mullvad's `wg0-mullvad` — NetworkManager adopts the
+device and generates a volatile connection for it under `/run/NetworkManager/`.
+It is `wireguard`-typed and active, so a type filter alone would list Mullvad's
+tunnel as a NetworkManager profile: the same tunnel on two chips, and a
+`connection down` that would yank it out from under the daemon that owns it.
+Profiles the user imported live under `/etc`, so anything under `/run` is
+dropped. An nmcli too old to report FILENAME leaves it empty, which keeps the
+row rather than emptying the list.
+
+**Exclusivity inside the backend.** The controller enforces one tunnel across
+backends, but NetworkManager will happily run two of its own profiles at once,
+and picking one is never a request for both. So `connectTo` runs two commands
+when something else is up: down the active profile, then up the chosen one. A
+failed teardown still proceeds, for the same reason the controller's does.
 
 **Nerd Font glyphs** are built with `String.fromCodePoint` rather than pasted as
 literal characters, because editing tools routinely mangle multi-byte sequences

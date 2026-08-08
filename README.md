@@ -4,7 +4,8 @@ A VPN widget for the Omarchy bar. One icon shows whether you are behind a
 tunnel; one panel connects, disconnects, and switches between the VPN tools you
 actually have installed.
 
-It supports **Proton VPN**, **Mullvad**, and **OpenVPN** today. Only the tools
+It supports **Proton VPN**, **Mullvad**, and the **OpenVPN** and **WireGuard**
+profiles NetworkManager holds. Only the tools
 found on your machine appear — install none and the widget tells you so; install
 several and a chip row lets you switch between them.
 
@@ -55,8 +56,9 @@ Inside the panel:
   one back for you.
 - **The list** is what you can connect to: for Proton VPN, fastest / P2P /
   random / Secure Core followed by every country; for Mullvad, any location
-  followed by every country it has relays in; for OpenVPN, your NetworkManager
-  profiles. A check mark marks where you are connected.
+  followed by every country it has relays in; for NetworkManager, your OpenVPN
+  and WireGuard profiles, told apart by their icon. A check mark marks where you
+  are connected.
 
 Keyboard, once the panel is open: `j`/`k` or arrows move — through the header,
 the chips, the name row, the settings switches if they are open, then the list —
@@ -74,8 +76,8 @@ Omarchy with its Quickshell desktop, plus at least one of:
 - **Proton VPN** — the `protonvpn` CLI, signed in (`protonvpn signin`).
 - **Mullvad** — the `mullvad` CLI with `mullvad-daemon` running, logged in
   (`mullvad account login <number>`).
-- **OpenVPN** — `openvpn` and `nmcli`, with at least one profile imported into
-  NetworkManager.
+- **OpenVPN or WireGuard** — `nmcli`, plus `openvpn` or `wg` (wireguard-tools),
+  with at least one profile imported into NetworkManager.
 
 ## Settings
 
@@ -109,20 +111,28 @@ own. That switch is in the panel, or:
 mullvad lockdown-mode set off
 ```
 
-## OpenVPN profiles
+## NetworkManager profiles
 
-OpenVPN has no daemon to ask, so the widget reads your profiles from
-NetworkManager — the thing that imports and stores `.ovpn` files on a desktop.
-Import one with:
+Neither OpenVPN nor WireGuard has a daemon of its own to ask, so both come from
+NetworkManager — the thing that imports and stores tunnel configs on a desktop.
+They share one chip, and the row icon says which is which. Import one with:
 
 ```bash
 nmcli connection import type openvpn file ~/Downloads/office.ovpn
+nmcli connection import type wireguard file ~/Downloads/home.conf
 ```
 
-A tunnel you started some other way (a bare `openvpn` process, or
-`openvpn-client@.service`) will not be listed.
+A tunnel you started some other way is not listed: a bare `openvpn` process,
+`openvpn-client@.service`, or a `wg-quick@` unit. Neither is a tunnel another
+tool on this list owns — Mullvad brings up its own WireGuard interface, and
+NetworkManager adopts it, but that belongs on the Mullvad chip and appears only
+there.
 
-A freshly imported profile usually has no credentials saved, and there is no
+Picking a profile takes down whichever one is already up. NetworkManager is
+happy to run two tunnels at once; that is never what clicking a second profile
+means.
+
+A freshly imported OpenVPN profile usually has no credentials saved, and there is no
 password prompt running inside the Omarchy shell. To make a profile connect in
 one click:
 
@@ -139,6 +149,10 @@ by root only.
 
 Without those, clicking a profile opens a terminal running
 `nmcli --ask connection up …` so you can type the password there.
+
+WireGuard needs none of this: its keys live in the profile. The one exception is
+a profile whose `wireguard.private-key-flags` were set to ask an agent, which
+lands in the same terminal.
 
 If you are importing a Proton `.ovpn`: the username and password are the
 **OpenVPN/IKEv2** credentials from your Proton dashboard, not your Proton
@@ -162,7 +176,7 @@ come back after a reboot).
 **Nothing appears in the bar.** Confirm the plugin is enabled with
 `omarchy plugin list`, then `omarchy restart shell`.
 
-**Proton and OpenVPN fight each other.** Proton's daemon tears down foreign
+**Proton and NetworkManager fight each other.** Proton's daemon tears down foreign
 tunnels when it connects. The widget already shuts other tools down before
 connecting, so use the widget rather than mixing it with the Proton app.
 
@@ -174,7 +188,7 @@ it:
 ```bash
 omarchy-shell jkoestinger.vpn status       # "Proton VPN · CH#1129 · Zurich, Switzerland"
 omarchy-shell jkoestinger.vpn ip           # current public address
-omarchy-shell jkoestinger.vpn backends     # "proton mullvad openvpn"
+omarchy-shell jkoestinger.vpn backends     # "proton mullvad networkmanager"
 omarchy-shell jkoestinger.vpn use mullvad  # switch the panel's active tool
 omarchy-shell jkoestinger.vpn connect CH   # country code, profile name, or row key
 omarchy-shell jkoestinger.vpn quickconnect # each tool's default connection

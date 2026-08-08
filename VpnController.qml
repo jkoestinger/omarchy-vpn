@@ -29,7 +29,7 @@ Item {
   // Set when the user picks a chip; "" follows `preferredBackend`.
   property string selectedId: ""
 
-  readonly property var backends: [proton, mullvad, openvpn]
+  readonly property var backends: [proton, mullvad, networkManager]
   readonly property var availableBackends: backends.filter(function(backend) { return backend.detected })
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 15, 5, 600)
 
@@ -148,7 +148,7 @@ Item {
     var preferred = String(setting("preferredBackend", "Auto"))
     if (preferred === "Proton VPN") return "proton"
     if (preferred === "Mullvad") return "mullvad"
-    if (preferred === "OpenVPN") return "openvpn"
+    if (preferred === "NetworkManager") return "networkmanager"
     return ""
   }
 
@@ -248,8 +248,8 @@ Item {
     settings: root.settings
   }
 
-  OpenVpnBackend {
-    id: openvpn
+  NetworkManagerBackend {
+    id: networkManager
     settings: root.settings
   }
 
