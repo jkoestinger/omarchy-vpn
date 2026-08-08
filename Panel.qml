@@ -13,9 +13,13 @@ Panel {
   ipcTarget: "jkoestinger.vpn"
   manageIpc: false
 
-  // "switcher" | "header" | "rows"
+  // "switcher" | "header" | "hero" | "toggles" | "rows"
   property string focusSection: "rows"
   property int rowIndex: 0
+  property int toggleIndex: 0
+  // Settings start folded away: they are the part of the panel you touch once
+  // and then leave alone. Kept for the session, not per open.
+  property bool settingsExpanded: false
   property bool cursorActive: false
   property bool ipCopied: false
 
@@ -26,18 +30,27 @@ Panel {
 
   readonly property var backend: vpn.active
   readonly property var rows: backend ? backend.targets : []
+  // Tool settings, for the backends that have any. A backend without them
+  // simply has no block here.
+  readonly property var toggles: backend && backend.toggles ? backend.toggles : []
+  readonly property bool settingsAvailable: toggles.length > 0
+  readonly property bool settingsVisible: settingsAvailable && settingsExpanded
   readonly property bool switcherVisible: vpn.availableBackends.length > 1
   readonly property bool filterVisible: backend !== null && backend.supportsFilter
   readonly property bool headerHasCursor: cursorActive && focusSection === "header"
   readonly property string statusLine: {
-    if (!backend) return "Install Proton VPN or OpenVPN to use this widget."
+    if (!backend) return "Install Proton VPN, Mullvad, or OpenVPN to use this widget."
     return backend.actionStatus !== "" ? backend.actionStatus : backend.lastError
   }
 
   function ensureCursor() {
     if (rows.length === 0 && focusSection === "rows") focusSection = "header"
+    if (!settingsAvailable && focusSection === "hero") focusSection = "header"
+    if (!settingsVisible && focusSection === "toggles") focusSection = settingsAvailable ? "hero" : "header"
     if (rowIndex >= rows.length) rowIndex = Math.max(0, rows.length - 1)
     if (rowIndex < 0) rowIndex = 0
+    if (toggleIndex >= toggles.length) toggleIndex = Math.max(0, toggles.length - 1)
+    if (toggleIndex < 0) toggleIndex = 0
   }
 
   function moveCursor(dx, dy) {
@@ -50,21 +63,45 @@ Panel {
     }
     if (dy === 0) return
 
-    // Top to bottom: header (address + master switch), backend chips, rows.
+    // Top to bottom: header (address + master switch), backend chips, the hero
+    // that folds the settings open, those settings, rows. Each step skips
+    // whatever the current backend does not have.
     if (focusSection === "header") {
       if (dy > 0) {
         if (switcherVisible) setSwitcherCursor()
-        else if (rows.length > 0) setRowCursor(0)
+        else stepBelowSwitcher()
       }
       return
     }
     if (focusSection === "switcher") {
       if (dy < 0) setHeaderCursor()
+      else stepBelowSwitcher()
+      return
+    }
+    if (focusSection === "hero") {
+      if (dy < 0) {
+        if (switcherVisible) setSwitcherCursor()
+        else setHeaderCursor()
+      } else if (settingsVisible) setToggleCursor(0)
       else if (rows.length > 0) setRowCursor(0)
       return
     }
+    if (focusSection === "toggles") {
+      if (dy < 0 && toggleIndex === 0) {
+        setHeroCursor()
+        return
+      }
+      if (dy > 0 && toggleIndex === toggles.length - 1) {
+        if (rows.length > 0) setRowCursor(0)
+        return
+      }
+      setToggleCursor(Math.max(0, Math.min(toggles.length - 1, toggleIndex + dy)))
+      return
+    }
     if (dy < 0 && rowIndex === 0) {
-      if (switcherVisible) setSwitcherCursor()
+      if (settingsVisible) setToggleCursor(toggles.length - 1)
+      else if (settingsAvailable) setHeroCursor()
+      else if (switcherVisible) setSwitcherCursor()
       else setHeaderCursor()
       return
     }
@@ -87,6 +124,7 @@ Panel {
   function selectBackend(backendId) {
     vpn.selectBackend(backendId)
     rowIndex = 0
+    toggleIndex = 0
     if (panelFlick) panelFlick.contentY = 0
   }
 
@@ -109,11 +147,48 @@ Panel {
     scrollCursorIntoView()
   }
 
+  function stepBelowSwitcher() {
+    if (settingsAvailable) setHeroCursor()
+    else if (rows.length > 0) setRowCursor(0)
+  }
+
+  function setHeroCursor() {
+    cursorActive = true
+    focusSection = "hero"
+    if (panelFlick) panelFlick.contentY = 0
+  }
+
+  function setToggleCursor(index) {
+    cursorActive = true
+    focusSection = "toggles"
+    toggleIndex = index
+    scrollToggleIntoView()
+  }
+
+  // Folding the settings away under the cursor would strand it on nothing, so
+  // the cursor comes back to the hero that did the folding.
+  function toggleSettings() {
+    if (!settingsAvailable) return
+    settingsExpanded = !settingsExpanded
+    if (!settingsExpanded && focusSection === "toggles") setHeroCursor()
+    else if (settingsExpanded) setHeroCursor()
+  }
+
   function activateCursor() {
     ensureCursor()
     if (!backend) return
     if (focusSection === "header") vpn.toggleActive()
+    else if (focusSection === "hero") toggleSettings()
+    else if (focusSection === "toggles" && toggles.length > 0) flipToggle(toggleIndex)
     else if (focusSection === "rows" && rows.length > 0) activateRow(rows[rowIndex])
+  }
+
+  // Settings go straight to the backend: they change how the tool behaves, not
+  // which tunnel is up, so exclusivity has nothing to say about them.
+  function flipToggle(index) {
+    var entry = toggles[index]
+    if (!backend || !entry) return
+    backend.setToggle(entry.key, !entry.value)
   }
 
   function copyPublicIp() {
@@ -133,8 +208,16 @@ Panel {
   function scrollCursorIntoView() {
     if (focusSection !== "rows" || !rowColumn) return
     if (rowIndex < 0 || rowIndex >= rowColumn.children.length) return
+    scrollIntoView(rowColumn.children[rowIndex])
+  }
 
-    var item = rowColumn.children[rowIndex]
+  function scrollToggleIntoView() {
+    if (focusSection !== "toggles" || !toggleColumn) return
+    if (toggleIndex < 0 || toggleIndex >= toggleColumn.children.length) return
+    scrollIntoView(toggleColumn.children[toggleIndex])
+  }
+
+  function scrollIntoView(item) {
     if (!panelFlick || !item) return
     Qt.callLater(function() {
       if (!item) return
@@ -156,6 +239,7 @@ Panel {
   onOpenedChanged: if (opened) {
     cursorActive = false
     rowIndex = 0
+    toggleIndex = 0
     focusSection = "rows"
     filterField.text = ""
     if (panelFlick) panelFlick.contentY = 0
@@ -397,20 +481,59 @@ Panel {
             }
           }
 
-          PanelHero {
-            id: hero
+          // Doubles as the settings drawer's handle when the tool has settings:
+          // the chevron is the only affordance, since a tool without any leaves
+          // the hero exactly as it was.
+          CursorSurface {
+            id: heroSurface
             width: parent.width
-            title: root.backend ? root.backend.label : "VPN"
-            meta: root.backend ? root.backend.summary : "Nothing detected"
+            implicitHeight: hero.implicitHeight + Style.spacing.rowPaddingX
+            hasCursor: root.cursorActive && root.focusSection === "hero"
             foreground: root.foreground
-            fontFamily: root.fontFamily
-            iconOpacity: vpn.anyConnected ? 1.0 : 0.5
-            iconComponent: Component {
-              Text {
-                text: root.backend ? root.backend.glyph : Model.GLYPH_VPN
-                color: vpn.anyConnected ? root.foreground : root.dim
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.display
+
+            PanelHero {
+              id: hero
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.leftMargin: Style.space(4)
+              anchors.rightMargin: Style.space(4)
+              title: root.backend ? root.backend.label : "VPN"
+              meta: root.backend ? root.backend.summary : "Nothing detected"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              iconOpacity: vpn.anyConnected ? 1.0 : 0.5
+              iconComponent: Component {
+                Text {
+                  text: root.backend ? root.backend.glyph : Model.GLYPH_VPN
+                  color: vpn.anyConnected ? root.foreground : root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.display
+                }
+              }
+              trailingControl: Component {
+                Text {
+                  visible: root.settingsAvailable
+                  text: root.settingsExpanded ? Model.GLYPH_CHEVRON_UP : Model.GLYPH_CHEVRON_DOWN
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.icon
+                }
+              }
+            }
+
+            MouseArea {
+              anchors.fill: parent
+              enabled: root.settingsAvailable
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onEntered: root.setHeroCursor()
+              onClicked: root.toggleSettings()
+
+              PanelToolTip {
+                visible: parent.containsMouse
+                text: root.settingsExpanded ? "Hide settings" : "Show settings"
+                fontFamily: root.fontFamily
               }
             }
           }
@@ -436,6 +559,31 @@ Panel {
                 required property var modelData
                 label: modelData.label
                 value: modelData.value
+              }
+            }
+          }
+
+          PanelSeparator {
+            visible: root.settingsVisible && root.backend !== null && root.backend.details.length > 0
+            foreground: root.foreground
+          }
+
+          // Settings the tool itself owns. The switches show what it reports,
+          // so changing one from its own CLI shows up here on the next poll.
+          Column {
+            id: toggleColumn
+            visible: root.settingsVisible
+            width: parent.width
+            spacing: Style.space(6)
+
+            Repeater {
+              model: root.toggles
+              ToggleRow {
+                required property var modelData
+                required property int index
+                width: toggleColumn.width
+                entry: modelData
+                cursorIndex: index
               }
             }
           }
@@ -579,6 +727,69 @@ Panel {
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.icon
+        Layout.alignment: Qt.AlignVCenter
+      }
+    }
+  }
+
+  component ToggleRow: CursorSurface {
+    id: toggleRow
+    property var entry: null
+    property int cursorIndex: 0
+
+    hasCursor: root.cursorActive && root.focusSection === "toggles" && root.toggleIndex === cursorIndex
+    foreground: root.foreground
+
+    implicitHeight: toggleContent.implicitHeight + Style.spacing.rowPaddingX
+
+    MouseArea {
+      anchors.fill: parent
+      hoverEnabled: true
+      cursorShape: Qt.PointingHandCursor
+      onEntered: root.setToggleCursor(toggleRow.cursorIndex)
+      onClicked: root.flipToggle(toggleRow.cursorIndex)
+    }
+
+    RowLayout {
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.leftMargin: Style.space(10)
+      anchors.rightMargin: Style.space(10)
+      spacing: Style.space(8)
+
+      ColumnLayout {
+        id: toggleContent
+        Layout.fillWidth: true
+        spacing: Style.space(1)
+
+        Text {
+          Layout.fillWidth: true
+          text: toggleRow.entry ? toggleRow.entry.label : ""
+          color: root.foreground
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.body
+          elide: Text.ElideRight
+        }
+
+        Text {
+          Layout.fillWidth: true
+          visible: toggleRow.entry && toggleRow.entry.detail !== ""
+          text: toggleRow.entry ? toggleRow.entry.detail : ""
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
+      }
+
+      ToggleSwitch {
+        checked: toggleRow.entry ? toggleRow.entry.value : false
+        busy: toggleRow.entry ? toggleRow.entry.busy === true : false
+        foreground: root.foreground
+        // The row owns the click and the cursor ring; a switch that owned them
+        // too would read as a second target inside the first.
+        interactive: false
         Layout.alignment: Qt.AlignVCenter
       }
     }

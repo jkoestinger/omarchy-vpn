@@ -21,8 +21,19 @@ Item {
   property var status: Model.parseProtonStatus("")
   property var countries: []
   property bool countriesLoaded: false
+  property var config: Model.parseProtonConfig("")
   property string actionStatus: ""
   property string lastError: ""
+
+  // Switches the panel draws under the detail rows. Values come from
+  // `protonvpn config list`; the widget stores none of them.
+  readonly property var toggles: Model.applyPendingToggles(Model.protonToggles(config), _pendingToggles)
+  property var _pendingToggles: ({})
+  // Which switch is in flight, so a refusal rolls back the right one.
+  property string _toggleKey: ""
+  // Last non-off value seen for the settings that have modes rather than an
+  // on position: { "netshield": "malware-only", … }
+  property var _lastModes: ({})
 
   // Optimistic connection state so the switch flips the instant you click it.
   // -1 follows the CLI, 0/1 while a connect/disconnect is still in flight.
@@ -57,7 +68,56 @@ Item {
   function refresh() {
     if (!detected || statusProcess.running) return
     statusProcess.running = true
+    if (!configProcess.running) configProcess.running = true
     if (!countriesLoaded && !countriesProcess.running) countriesProcess.running = true
+  }
+
+  function setToggle(key, value) {
+    if (!detected || toggleProcess.running) return
+
+    var args = Model.protonToggleArgs(key, value, _lastModes[key])
+    if (args.length === 0) return
+
+    var pending = {}
+    for (var name in _pendingToggles) pending[name] = _pendingToggles[name]
+    pending[key] = value
+    _pendingToggles = pending
+
+    lastError = ""
+    _toggleKey = key
+    toggleProcess.command = ["protonvpn"].concat(args)
+    toggleProcess.running = true
+  }
+
+  function applyConfig(raw) {
+    var parsed = Model.parseProtonConfig(raw)
+    root.config = parsed
+    // Remember the mode behind each on/off switch, so turning one back on
+    // restores what was there instead of the default.
+    root._lastModes = Model.protonModes(parsed, root._lastModes)
+
+    // "on" is not one value here — kill switch and NetShield each have modes —
+    // so agreement is checked against the switch positions, not the raw text.
+    var current = Model.protonToggles(parsed)
+    var pending = {}
+    var changed = false
+    for (var key in _pendingToggles) {
+      var agreed = false
+      for (var i = 0; i < current.length; i++) {
+        if (current[i].key === key && current[i].value === _pendingToggles[key]) agreed = true
+      }
+      if (agreed) changed = true
+      else pending[key] = _pendingToggles[key]
+    }
+    if (changed) _pendingToggles = pending
+  }
+
+  function clearPending(key) {
+    var pending = {}
+    for (var name in _pendingToggles) {
+      if (name !== key) pending[name] = _pendingToggles[name]
+    }
+    _pendingToggles = pending
   }
 
   function connectTo(target) {
@@ -152,6 +212,34 @@ Item {
       settleTimer.ticks = 0
       settleTimer.restart()
       root.refresh()
+    }
+  }
+
+  Process {
+    id: configProcess
+    running: false
+    command: ["protonvpn", "config", "list"]
+    stdout: StdioCollector { id: configStdout; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) return
+      root.applyConfig(String(configStdout.text || ""))
+    }
+  }
+
+  Process {
+    id: toggleProcess
+    running: false
+    command: []
+    stdout: StdioCollector { id: toggleStdout; waitForEnd: true }
+    stderr: StdioCollector { id: toggleStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        root.lastError = Model.elide(
+          String(toggleStderr.text || toggleStdout.text || "") || "Proton VPN refused that setting", 140)
+        root.clearPending(root._toggleKey)
+      }
+      root._toggleKey = ""
+      if (!configProcess.running) configProcess.running = true
     }
   }
 

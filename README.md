@@ -4,9 +4,9 @@ A VPN widget for the Omarchy bar. One icon shows whether you are behind a
 tunnel; one panel connects, disconnects, and switches between the VPN tools you
 actually have installed.
 
-It supports **Proton VPN** and **OpenVPN** today. Only the tools found on your
-machine appear — install neither and the widget tells you so; install both and a
-chip row lets you switch between them.
+It supports **Proton VPN**, **Mullvad**, and **OpenVPN** today. Only the tools
+found on your machine appear — install none and the widget tells you so; install
+several and a chip row lets you switch between them.
 
 ## Install
 
@@ -34,7 +34,7 @@ Hover it to see which one.
 | Action | Result |
 |--------|--------|
 | Left click | Open the panel |
-| Right click | Connect to the fastest server, or disconnect |
+| Right click | Connect using the tool's own default, or disconnect |
 | Middle click | Refresh status and public IP |
 
 Inside the panel:
@@ -45,13 +45,24 @@ Inside the panel:
   your routes.
 - **The chips** below choose which tool you are looking at. They only appear
   when you have more than one installed.
-- **The list** is what you can connect to: for Proton VPN, fastest / random /
-  Secure Core followed by every country; for OpenVPN, your NetworkManager
+- **The name row** is also a drawer. Tools with settings of their own get a
+  chevron; click the row to fold them out, click it again to put them away. It
+  starts closed and stays however you left it until the shell restarts.
+- **The settings** inside are Mullvad's connect-on-startup, lockdown mode, and
+  local network sharing, and Proton VPN's kill switch, NetShield, and port
+  forwarding. They show what the tool itself reports, so changing one from its
+  CLI shows up here on the next poll — the widget keeps no copy and never puts
+  one back for you.
+- **The list** is what you can connect to: for Proton VPN, fastest / P2P /
+  random / Secure Core followed by every country; for Mullvad, any location
+  followed by every country it has relays in; for OpenVPN, your NetworkManager
   profiles. A check mark marks where you are connected.
 
-Keyboard, once the panel is open: `j`/`k` or arrows move, `Enter` connects,
-`h`/`l` move along the chip row, `s` cycles tools, `/` searches countries, `d`
-disconnects, `r` refreshes, `Esc` closes.
+Keyboard, once the panel is open: `j`/`k` or arrows move — through the header,
+the chips, the name row, the settings switches if they are open, then the list —
+`Enter` connects, flips a switch, or opens and closes the settings drawer,
+depending on what the cursor is on. `h`/`l` move along the chip row, `s` cycles
+tools, `/` searches countries, `d` disconnects, `r` refreshes, `Esc` closes.
 
 The public IP is fetched from `checkip.amazonaws.com` — never on a timer, only
 when the connection changes, when the panel first opens, or when you ask.
@@ -61,6 +72,8 @@ when the connection changes, when the panel first opens, or when you ask.
 Omarchy with its Quickshell desktop, plus at least one of:
 
 - **Proton VPN** — the `protonvpn` CLI, signed in (`protonvpn signin`).
+- **Mullvad** — the `mullvad` CLI with `mullvad-daemon` running, logged in
+  (`mullvad account login <number>`).
 - **OpenVPN** — `openvpn` and `nmcli`, with at least one profile imported into
   NetworkManager.
 
@@ -73,7 +86,28 @@ Configure these in **Setup › Plugins**, or in the widget's entry in
 |---------|---------|--------------|
 | `refreshIntervalSec` | `15` | How often the connection status is polled |
 | `preferredBackend` | `Auto` | Which tool the panel opens on. `Auto` picks whichever is connected |
-| `favoriteCountries` | `CH,NL,US` | Proton VPN countries pinned to the top of the list |
+| `favoriteCountries` | `CH,NL,US` | Country codes pinned to the top of the Proton VPN and Mullvad lists |
+
+## Mullvad
+
+Mullvad separates picking a relay from connecting: `mullvad relay set location`
+records a constraint, `mullvad connect` brings the tunnel up against it. The
+widget does both for you, so clicking a country connects to it and the choice
+sticks — the switch and `quickconnect` reconnect to whatever you picked last
+rather than to a "fastest server" the CLI has no notion of. **Any location**
+hands the choice back to Mullvad.
+
+Cities are searchable even though only countries are listed: typing `zurich`
+finds Switzerland.
+
+**Lockdown mode** blocks all traffic whenever Mullvad is disconnected —
+including the traffic another VPN needs to connect. The widget says so before it
+shuts Mullvad down for a different tool, but it will not turn lockdown off on its
+own. That switch is in the panel, or:
+
+```bash
+mullvad lockdown-mode set off
+```
 
 ## OpenVPN profiles
 
@@ -121,6 +155,10 @@ tool's own CLI first — for Proton, the OpenVPN credentials are not the account
 password. `journalctl -u NetworkManager -f` shows `AUTH_FAILED` when the server
 is the one saying no.
 
+**Mullvad says the daemon is not responding.** The CLI is only a client. Start
+the daemon with `sudo systemctl start mullvad-daemon` (and `enable` it to have it
+come back after a reboot).
+
 **Nothing appears in the bar.** Confirm the plugin is enabled with
 `omarchy plugin list`, then `omarchy restart shell`.
 
@@ -136,10 +174,10 @@ it:
 ```bash
 omarchy-shell jkoestinger.vpn status       # "Proton VPN · CH#1129 · Zurich, Switzerland"
 omarchy-shell jkoestinger.vpn ip           # current public address
-omarchy-shell jkoestinger.vpn backends     # "proton openvpn"
-omarchy-shell jkoestinger.vpn use openvpn  # switch the panel's active tool
+omarchy-shell jkoestinger.vpn backends     # "proton mullvad openvpn"
+omarchy-shell jkoestinger.vpn use mullvad  # switch the panel's active tool
 omarchy-shell jkoestinger.vpn connect CH   # country code, profile name, or row key
-omarchy-shell jkoestinger.vpn quickconnect # fastest available
+omarchy-shell jkoestinger.vpn quickconnect # each tool's default connection
 omarchy-shell jkoestinger.vpn disconnect
 omarchy-shell jkoestinger.vpn toggle       # open or close the panel
 ```
