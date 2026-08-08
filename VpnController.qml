@@ -15,9 +15,11 @@ import "Model.js" as Model
 //   details                          [{ label, value }] shown while connected
 //   targets                          [{ key, label, detail, glyph, args }]
 //   emptyText                        shown when targets is empty
+//   toggles                          [{ key, label, detail, value, busy }] tool settings
 //   busy, actionStatus, lastError    transient feedback
 //   detect(), refresh()              probing
 //   connectTo(target), disconnect(), toggleConnection()
+//   setToggle(key, value)            flip one of the tool's own settings
 Item {
   id: root
   visible: false

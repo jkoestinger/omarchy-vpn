@@ -45,14 +45,24 @@ Inside the panel:
   your routes.
 - **The chips** below choose which tool you are looking at. They only appear
   when you have more than one installed.
-- **The list** is what you can connect to: for Proton VPN, fastest / random /
-  Secure Core followed by every country; for Mullvad, any location followed by
-  every country it has relays in; for OpenVPN, your NetworkManager profiles. A
-  check mark marks where you are connected.
+- **The name row** is also a drawer. Tools with settings of their own get a
+  chevron; click the row to fold them out, click it again to put them away. It
+  starts closed and stays however you left it until the shell restarts.
+- **The settings** inside are Mullvad's connect-on-startup, lockdown mode, and
+  local network sharing, and Proton VPN's kill switch, NetShield, and port
+  forwarding. They show what the tool itself reports, so changing one from its
+  CLI shows up here on the next poll — the widget keeps no copy and never puts
+  one back for you.
+- **The list** is what you can connect to: for Proton VPN, fastest / P2P /
+  random / Secure Core followed by every country; for Mullvad, any location
+  followed by every country it has relays in; for OpenVPN, your NetworkManager
+  profiles. A check mark marks where you are connected.
 
-Keyboard, once the panel is open: `j`/`k` or arrows move, `Enter` connects,
-`h`/`l` move along the chip row, `s` cycles tools, `/` searches countries, `d`
-disconnects, `r` refreshes, `Esc` closes.
+Keyboard, once the panel is open: `j`/`k` or arrows move — through the header,
+the chips, the name row, the settings switches if they are open, then the list —
+`Enter` connects, flips a switch, or opens and closes the settings drawer,
+depending on what the cursor is on. `h`/`l` move along the chip row, `s` cycles
+tools, `/` searches countries, `d` disconnects, `r` refreshes, `Esc` closes.
 
 The public IP is fetched from `checkip.amazonaws.com` — never on a timer, only
 when the connection changes, when the panel first opens, or when you ask.
@@ -90,10 +100,10 @@ hands the choice back to Mullvad.
 Cities are searchable even though only countries are listed: typing `zurich`
 finds Switzerland.
 
-**Lockdown mode** (`mullvad lockdown-mode set on`) blocks all traffic whenever
-Mullvad is disconnected — including the traffic another VPN needs to connect. The
-widget says so before it shuts Mullvad down for a different tool, but it will not
-turn lockdown off for you. Do that yourself with:
+**Lockdown mode** blocks all traffic whenever Mullvad is disconnected —
+including the traffic another VPN needs to connect. The widget says so before it
+shuts Mullvad down for a different tool, but it will not turn lockdown off on its
+own. That switch is in the panel, or:
 
 ```bash
 mullvad lockdown-mode set off

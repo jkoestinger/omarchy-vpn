@@ -7,6 +7,9 @@ var GLYPH_CHECK = String.fromCodePoint(0xF012C)
 var GLYPH_LOCK = String.fromCodePoint(0xF033E)
 var GLYPH_BOLT = String.fromCodePoint(0xF04C5)
 var GLYPH_DICE = String.fromCodePoint(0xF01D5)
+var GLYPH_SWAP = String.fromCodePoint(0xF04E1)
+var GLYPH_CHEVRON_DOWN = String.fromCodePoint(0xF0140)
+var GLYPH_CHEVRON_UP = String.fromCodePoint(0xF0143)
 
 // ----------------------------------------------------------------- shared
 
@@ -17,6 +20,22 @@ function elide(text, limit) {
 
 function detail(label, value) {
   return { label: label, value: String(value || "") }
+}
+
+// A tool setting the panel can flip. The value is always what the tool last
+// reported, never something the widget stores — nothing here owns a setting.
+function toggle(key, label, description, value) {
+  return { key: key, label: label, detail: description, value: value === true, busy: false }
+}
+
+// A toggle the user just flipped shows the new position and a busy marker until
+// the tool confirms it, so the switch does not sit still under the click.
+function applyPendingToggles(toggles, pending) {
+  if (!pending) return toggles
+  return toggles.map(function(entry) {
+    if (pending[entry.key] === undefined) return entry
+    return { key: entry.key, label: entry.label, detail: entry.detail, value: pending[entry.key] === true, busy: true }
+  })
 }
 
 // ------------------------------------------------------------ Proton VPN
@@ -119,6 +138,88 @@ function parseProtonCountries(raw) {
   return countries
 }
 
+// `protonvpn config list` prints a padded two-column table under a dashed rule:
+//
+//   Setting                  Value
+//   -----------------------  ------------
+//   netshield                malware-only
+//   kill-switch              off
+function parseProtonConfig(raw) {
+  var values = {}
+  var loaded = false
+  var lines = String(raw || "").split("\n")
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim()
+    if (line === "" || line.indexOf("---") === 0) continue
+
+    var match = line.match(/^(\S+)\s{2,}(\S+)$/)
+    if (!match) continue
+
+    var key = match[1].toLowerCase()
+    if (key === "setting") continue
+
+    values[key] = match[2]
+    loaded = true
+  }
+
+  return { values: values, loaded: loaded }
+}
+
+// Three of Proton's settings read as plain switches. The rest — custom DNS,
+// NAT type, IPv6 — are not on/off questions and stay with the CLI.
+function protonToggles(config) {
+  if (!config || !config.loaded) return []
+
+  var netshield = String(config.values["netshield"] || "off")
+  var killSwitch = String(config.values["kill-switch"] || "off")
+
+  return [
+    toggle("kill-switch", "Kill switch",
+      killSwitch !== "off" && killSwitch !== "standard"
+        ? "Mode: " + killSwitch
+        : "Cut traffic if the tunnel drops",
+      killSwitch !== "off"),
+    toggle("netshield", "NetShield",
+      netshield !== "off" ? "Blocking: " + netshield : "Block ads, trackers, malware",
+      netshield !== "off"),
+    toggle("port-forwarding", "Port forwarding", "Open an inbound port for P2P",
+      String(config.values["port-forwarding"] || "off") === "on")
+  ]
+}
+
+// Turning one on means picking a value, since only "off" is shared. Switching
+// one off and on again should land back on the mode it had — "malware-only" is
+// a deliberate choice, and a switch that silently upgraded it to
+// "malware-ads-trackers" would be changing a setting nobody asked it to change.
+// `previousMode` is the last non-off value the tool reported.
+function protonToggleArgs(key, value, previousMode) {
+  var mode = String(previousMode || "")
+
+  if (key === "kill-switch") {
+    return ["config", "set", "kill-switch", value ? (mode !== "" ? mode : "standard") : "off"]
+  }
+  if (key === "netshield") {
+    return ["config", "set", "netshield", value ? (mode !== "" ? mode : "malware-ads-trackers") : "off"]
+  }
+  if (key === "port-forwarding") return ["config", "set", "port-forwarding", value ? "on" : "off"]
+  return []
+}
+
+// The modes worth remembering across an off/on round trip.
+function protonModes(config, known) {
+  var modes = {}
+  for (var key in known) modes[key] = known[key]
+  if (!config || !config.loaded) return modes
+
+  var keys = ["kill-switch", "netshield"]
+  for (var i = 0; i < keys.length; i++) {
+    var value = String(config.values[keys[i]] || "off")
+    if (value !== "off") modes[keys[i]] = value
+  }
+  return modes
+}
+
 function protonLocation(status) {
   var parts = []
   if (status.city !== "") parts.push(status.city)
@@ -160,6 +261,7 @@ function favoriteCodes(raw) {
 function protonQuickTargets() {
   return [
     { key: "fastest", label: "Fastest server", detail: "Best available worldwide", glyph: GLYPH_BOLT, args: [] },
+    { key: "p2p", label: "P2P server", detail: "Fastest server that allows P2P", glyph: GLYPH_SWAP, args: ["--p2p"] },
     { key: "random", label: "Random server", detail: "Pick any available server", glyph: GLYPH_DICE, args: ["--random"] },
     { key: "securecore", label: "Secure Core", detail: "Route through a hardened entry", glyph: GLYPH_LOCK, args: ["--securecore"] }
   ]
@@ -558,6 +660,53 @@ function mullvadCurrentKey(status, countries) {
   return ""
 }
 
-function mullvadLockdownEnabled(raw) {
-  return /:\s*on\b/i.test(String(raw || ""))
+// The three switchable settings live behind three separate subcommands, so the
+// backend asks for them in one shell and this reads whichever lines came back.
+// Each is matched on its leading words rather than on line order:
+//
+//   Autoconnect: off
+//   Block traffic when the VPN is disconnected: off
+//   Local network sharing setting: block
+function parseMullvadSettings(raw) {
+  var settings = { autoconnect: false, lockdown: false, lan: false, loaded: false }
+  var lines = String(raw || "").split("\n")
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i].trim()
+    var separator = line.indexOf(":")
+    if (separator < 0) continue
+
+    var key = line.substring(0, separator).trim().toLowerCase()
+    var value = line.substring(separator + 1).trim().toLowerCase()
+    if (value === "") continue
+
+    if (key === "autoconnect") {
+      settings.autoconnect = value === "on"
+      settings.loaded = true
+    } else if (key.indexOf("block traffic") === 0) {
+      settings.lockdown = value === "on"
+      settings.loaded = true
+    } else if (key.indexOf("local network sharing") === 0) {
+      settings.lan = value === "allow"
+      settings.loaded = true
+    }
+  }
+  return settings
+}
+
+function mullvadToggles(settings) {
+  if (!settings || !settings.loaded) return []
+
+  return [
+    toggle("autoconnect", "Connect on startup", "Up as soon as the daemon starts", settings.autoconnect),
+    toggle("lockdown", "Lockdown mode", "No traffic at all while down", settings.lockdown),
+    toggle("lan", "Allow local network", "Reach printers and NAS while up", settings.lan)
+  ]
+}
+
+function mullvadToggleArgs(key, value) {
+  if (key === "autoconnect") return ["auto-connect", "set", value ? "on" : "off"]
+  if (key === "lockdown") return ["lockdown-mode", "set", value ? "on" : "off"]
+  if (key === "lan") return ["lan", "set", value ? "allow" : "block"]
+  return []
 }

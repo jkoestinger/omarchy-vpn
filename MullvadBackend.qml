@@ -25,11 +25,18 @@ Item {
   property var status: Model.parseMullvadStatus("")
   property var relays: []
   property bool relaysLoaded: false
-  // The stored "block traffic while disconnected" setting, which the status
-  // payload only reports while the tunnel is already down.
-  property bool lockdownMode: false
+  property var daemonSettings: Model.parseMullvadSettings("")
   property string actionStatus: ""
   property string lastError: ""
+
+  // The stored "block traffic while disconnected" setting, which the status
+  // payload only reports while the tunnel is already down.
+  readonly property bool lockdownMode: daemonSettings.lockdown
+
+  // Switches the panel draws under the detail rows. Values are whatever the
+  // daemon last reported; the widget stores none of them.
+  readonly property var toggles: Model.applyPendingToggles(Model.mullvadToggles(daemonSettings), _pendingToggles)
+  property var _pendingToggles: ({})
 
   // Optimistic connection state so the switch flips the instant you click it.
   // -1 follows the daemon, 0/1 while a connect/disconnect is still in flight.
@@ -52,6 +59,8 @@ Item {
   // What connectTo() is in the middle of: "location", then "connect".
   property string _stage: ""
   property var _pendingTarget: null
+  // Which switch is in flight, so a refusal rolls back the right one.
+  property string _toggleKey: ""
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -66,8 +75,48 @@ Item {
   function refresh() {
     if (!detected || statusProcess.running) return
     statusProcess.running = true
-    if (!lockdownProcess.running) lockdownProcess.running = true
+    if (!settingsProcess.running) settingsProcess.running = true
     if (!relaysLoaded && !relaysProcess.running) relaysProcess.running = true
+  }
+
+  function setToggle(key, value) {
+    if (!detected || toggleProcess.running) return
+
+    var args = Model.mullvadToggleArgs(key, value)
+    if (args.length === 0) return
+
+    var pending = {}
+    for (var name in _pendingToggles) pending[name] = _pendingToggles[name]
+    pending[key] = value
+    _pendingToggles = pending
+
+    lastError = ""
+    _toggleKey = key
+    toggleProcess.command = ["mullvad"].concat(args)
+    toggleProcess.running = true
+  }
+
+  function applySettings(raw) {
+    var parsed = Model.parseMullvadSettings(raw)
+    root.daemonSettings = parsed
+
+    // Drop the optimistic value only for the switches the daemon now agrees
+    // with, so a poll landing mid-flight cannot flick the others back.
+    var pending = {}
+    var changed = false
+    for (var key in _pendingToggles) {
+      if (parsed[key] === _pendingToggles[key]) changed = true
+      else pending[key] = _pendingToggles[key]
+    }
+    if (changed) _pendingToggles = pending
+  }
+
+  function clearPending(key) {
+    var pending = {}
+    for (var name in _pendingToggles) {
+      if (name !== key) pending[name] = _pendingToggles[name]
+    }
+    _pendingToggles = pending
   }
 
   // Two commands, not one. `relay set location` only records a constraint; the
@@ -206,14 +255,34 @@ Item {
     }
   }
 
+  // Three subcommands, one process. Each answer names itself, so the parser
+  // does not care about the order they come back in.
   Process {
-    id: lockdownProcess
+    id: settingsProcess
     running: false
-    command: ["mullvad", "lockdown-mode", "get"]
-    stdout: StdioCollector { id: lockdownStdout; waitForEnd: true }
+    command: ["bash", "-c", "mullvad auto-connect get; mullvad lockdown-mode get; mullvad lan get"]
+    stdout: StdioCollector { id: settingsStdout; waitForEnd: true }
     onExited: function(exitCode) {
       if (exitCode !== 0) return
-      root.lockdownMode = Model.mullvadLockdownEnabled(String(lockdownStdout.text || ""))
+      root.applySettings(String(settingsStdout.text || ""))
+    }
+  }
+
+  Process {
+    id: toggleProcess
+    running: false
+    command: []
+    stdout: StdioCollector { id: toggleStdout; waitForEnd: true }
+    stderr: StdioCollector { id: toggleStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        root.lastError = root.describeFailure(
+          String(toggleStderr.text || "") + "\n" + String(toggleStdout.text || ""),
+          "Mullvad refused that setting")
+        root.clearPending(root._toggleKey)
+      }
+      root._toggleKey = ""
+      if (!settingsProcess.running) settingsProcess.running = true
     }
   }
 
