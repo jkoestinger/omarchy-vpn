@@ -8,6 +8,7 @@ var GLYPH_LOCK = String.fromCodePoint(0xF033E)
 var GLYPH_BOLT = String.fromCodePoint(0xF04C5)
 var GLYPH_DICE = String.fromCodePoint(0xF01D5)
 var GLYPH_SWAP = String.fromCodePoint(0xF04E1)
+var GLYPH_SHIELD = String.fromCodePoint(0xF0498)
 var GLYPH_CHEVRON_DOWN = String.fromCodePoint(0xF0140)
 var GLYPH_CHEVRON_UP = String.fromCodePoint(0xF0143)
 
@@ -295,7 +296,13 @@ function protonCountryTargets(countries, favorites, filter) {
   return favored.concat(rest)
 }
 
-// ---------------------------------------------------------------- OpenVPN
+// --------------------------------------------------------- NetworkManager
+//
+// OpenVPN and WireGuard both live here, because on a desktop both are
+// NetworkManager profiles: same listing call, same `connection up` verb, same
+// teardown. What differs is how NetworkManager types them — OpenVPN is a `vpn`
+// connection with a service-type plugin behind it, WireGuard is its own
+// connection type with the keys in the profile.
 
 // `nmcli -t` escapes literal colons as "\:", so split on the first unescaped
 // one rather than on every colon.
@@ -312,9 +319,25 @@ function unescapeNmcli(value) {
   return String(value || "").replace(/\\(.)/g, "$1")
 }
 
-// `nmcli -t -f NAME,UUID,TYPE,ACTIVE connection show` — one connection per
-// line. Only the `vpn` type can be an OpenVPN profile; `wireguard` and plain
-// devices are somebody else's business.
+// Generated on the fly for a device someone else brought up, rather than a
+// profile on disk. An older nmcli that does not report FILENAME leaves this
+// empty, in which case the connection is kept — better a stray row than a
+// backend that lists nothing at all.
+function isVolatileConnection(filename) {
+  return String(filename || "").indexOf("/run/") === 0
+}
+
+// `nmcli -t -f NAME,UUID,TYPE,ACTIVE,FILENAME connection show` — one connection
+// per line. Two types are tunnels: `vpn` (an OpenVPN profile, or another
+// plugin's, which the second pass sorts out) and `wireguard`. Ethernet, wifi,
+// bridges and the rest are somebody else's business.
+//
+// FILENAME is what keeps other tools' tunnels out. When something brings up a
+// WireGuard interface itself — Mullvad's `wg0-mullvad`, say — NetworkManager
+// adopts the device and generates a volatile connection for it under
+// `/run/NetworkManager/`. Listing that would put the same tunnel on two chips,
+// and taking it down through nmcli would yank it out from under the tool that
+// owns it. Profiles the user actually imported are stored under `/etc`.
 function parseNmcliConnections(raw) {
   var connections = []
   var lines = String(raw || "").split("\n")
@@ -324,15 +347,22 @@ function parseNmcliConnections(raw) {
 
     var fields = []
     var rest = line
-    for (var f = 0; f < 3; f++) {
+    for (var f = 0; f < 4; f++) {
       var pair = splitNmcliLine(rest)
       fields.push(pair[0])
       rest = pair[1]
     }
     fields.push(unescapeNmcli(rest))
 
-    if (fields[2] !== "vpn") continue
-    connections.push({ name: fields[0], uuid: fields[1], active: fields[3] === "yes" })
+    if (fields[2] !== "vpn" && fields[2] !== "wireguard") continue
+    if (isVolatileConnection(fields[4])) continue
+    connections.push({
+      name: fields[0],
+      uuid: fields[1],
+      // "vpn" here means "needs the second pass to say which plugin".
+      kind: fields[2] === "wireguard" ? "wireguard" : "vpn",
+      active: fields[3] === "yes"
+    })
   }
   return connections
 }
@@ -388,42 +418,59 @@ function isOpenVpnService(serviceType) {
   return String(serviceType || "").toLowerCase().indexOf("openvpn") !== -1
 }
 
-function openVpnTargets(profiles) {
+function isWireGuard(profile) {
+  return profile && profile.kind === "wireguard"
+}
+
+function nmKindLabel(profile) {
+  return isWireGuard(profile) ? "WireGuard" : "OpenVPN"
+}
+
+// The glyph carries the kind, since the rows otherwise look identical and the
+// two behave differently the moment credentials come up.
+function nmTargets(profiles) {
   var targets = []
   for (var i = 0; i < profiles.length; i++) {
     var profile = profiles[i]
+    var wireguard = isWireGuard(profile)
+
     targets.push({
       key: "profile:" + profile.uuid,
       label: profile.name,
       detail: profile.active
         ? "Connected"
-        : (profile.hasUsername ? "NetworkManager profile" : "No username set"),
-      glyph: GLYPH_LOCK,
+        // Only OpenVPN can be missing a username: WireGuard keeps its keys in
+        // the profile, so there is nothing for the user to have left out.
+        : (wireguard || profile.hasUsername ? nmKindLabel(profile) + " profile" : "No username set"),
+      glyph: wireguard ? GLYPH_SHIELD : GLYPH_LOCK,
       args: ["connection", "up", "uuid", profile.uuid],
       uuid: profile.uuid,
+      kind: profile.kind,
       hasUsername: profile.hasUsername
     })
   }
   return targets
 }
 
-function openVpnSummary(profiles) {
+function nmSummary(profiles) {
   for (var i = 0; i < profiles.length; i++) {
     if (profiles[i].active) return profiles[i].name
   }
   return profiles.length === 0 ? "No profiles" : "Not connected"
 }
 
-function openVpnDetails(profiles) {
+function nmDetails(profiles) {
   var rows = []
   for (var i = 0; i < profiles.length; i++) {
-    if (profiles[i].active) rows.push(detail("Profile", profiles[i].name))
+    if (!profiles[i].active) continue
+    rows.push(detail("Profile", profiles[i].name))
+    rows.push(detail("Type", nmKindLabel(profiles[i])))
   }
   if (rows.length > 0) rows.push(detail("Managed by", "NetworkManager"))
   return rows
 }
 
-function activeOpenVpnProfile(profiles) {
+function activeNmProfile(profiles) {
   for (var i = 0; i < profiles.length; i++) {
     if (profiles[i].active) return profiles[i]
   }
