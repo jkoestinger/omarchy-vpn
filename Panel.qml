@@ -230,6 +230,14 @@ Panel {
       vpn.active.disconnect()
       return "ok"
     }
+    // A declared IPC argument is mandatory, so "connect, no target in mind"
+    // needs a method of its own rather than an empty string.
+    function quickconnect(): string {
+      if (!vpn.active) return "no backend"
+      if (vpn.active.connected) return "already connected"
+      vpn.toggleActive()
+      return "ok"
+    }
   }
 
   BarIconButton {

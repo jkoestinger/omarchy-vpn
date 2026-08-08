@@ -1,42 +1,96 @@
-# VPN
+# omarchy-vpn
 
-One bar icon for whichever VPN tools are installed. The widget probes for each
-supported tool at startup, shows only the ones it finds, and offers a switcher
-when there is more than one.
+A VPN widget for the Omarchy bar. One icon shows whether you are behind a
+tunnel; one panel connects, disconnects, and switches between the VPN tools you
+actually have installed.
 
-## Backends
+It supports **Proton VPN** and **OpenVPN** today. Only the tools found on your
+machine appear — install neither and the widget tells you so; install both and a
+chip row lets you switch between them.
 
-| Backend | Detected when | Drives |
-|---------|---------------|--------|
-| Proton VPN | `protonvpn` on `PATH` | `protonvpn status` / `connect` / `disconnect` / `countries list` |
-| OpenVPN | `nmcli` and `openvpn` on `PATH` | NetworkManager connections whose `vpn.service-type` contains `openvpn` |
+## Install
 
-OpenVPN has no session daemon to query, so its profiles come from
-NetworkManager — the thing that actually imports and stores `.ovpn` files on a
-desktop. Import one with:
+```bash
+omarchy plugin add https://github.com/jkoestinger/omarchy-vpn.git
+omarchy plugin enable jkoestinger.vpn
+```
+
+Plugins land disabled so you can read the code before it runs — it runs
+unsandboxed inside `omarchy-shell`, like every Omarchy plugin. **Setup ›
+Plugins** does the same thing from the menu.
+
+The icon appears at the right end of the bar. Move it with
+`omarchy bar move jkoestinger.vpn --before omarchy.clock`, or any other
+placement.
+
+To update later: `omarchy plugin update`. To remove:
+`omarchy plugin remove jkoestinger.vpn`.
+
+## Using it
+
+The bar icon is dim when nothing is connected and bright when a tunnel is up.
+Hover it to see which one.
+
+| Action | Result |
+|--------|--------|
+| Left click | Open the panel |
+| Right click | Connect to the fastest server, or disconnect |
+| Middle click | Refresh status and public IP |
+
+Inside the panel:
+
+- **Public IP** sits top-left. Click it to copy it.
+- **The switch** top-right connects or disconnects. Turning one VPN on shuts
+  every other one off first — you never end up with two tunnels fighting over
+  your routes.
+- **The chips** below choose which tool you are looking at. They only appear
+  when you have more than one installed.
+- **The list** is what you can connect to: for Proton VPN, fastest / random /
+  Secure Core followed by every country; for OpenVPN, your NetworkManager
+  profiles. A check mark marks where you are connected.
+
+Keyboard, once the panel is open: `j`/`k` or arrows move, `Enter` connects,
+`h`/`l` move along the chip row, `s` cycles tools, `/` searches countries, `d`
+disconnects, `r` refreshes, `Esc` closes.
+
+The public IP is fetched from `checkip.amazonaws.com` — never on a timer, only
+when the connection changes, when the panel first opens, or when you ask.
+
+## Requirements
+
+Omarchy with its Quickshell desktop, plus at least one of:
+
+- **Proton VPN** — the `protonvpn` CLI, signed in (`protonvpn signin`).
+- **OpenVPN** — `openvpn` and `nmcli`, with at least one profile imported into
+  NetworkManager.
+
+## Settings
+
+Configure these in **Setup › Plugins**, or in the widget's entry in
+`~/.config/omarchy/shell.json`.
+
+| Setting | Default | What it does |
+|---------|---------|--------------|
+| `refreshIntervalSec` | `15` | How often the connection status is polled |
+| `preferredBackend` | `Auto` | Which tool the panel opens on. `Auto` picks whichever is connected |
+| `favoriteCountries` | `CH,NL,US` | Proton VPN countries pinned to the top of the list |
+
+## OpenVPN profiles
+
+OpenVPN has no daemon to ask, so the widget reads your profiles from
+NetworkManager — the thing that imports and stores `.ovpn` files on a desktop.
+Import one with:
 
 ```bash
 nmcli connection import type openvpn file ~/Downloads/office.ovpn
 ```
 
-Profiles started outside NetworkManager (a bare `openvpn` process, or
-`openvpn-client@.service`) are not listed.
+A tunnel you started some other way (a bare `openvpn` process, or
+`openvpn-client@.service`) will not be listed.
 
-### Credentials
-
-An imported `.ovpn` usually carries no password, and the Omarchy shell runs no
-NetworkManager secret agent, so a headless `nmcli connection up` fails with
-`No valid secrets`. When that happens the widget reopens the same activation in
-a floating terminal as `nmcli --ask connection up uuid <uuid>`, which prompts
-for whatever is missing.
-
-The username is a different matter. NetworkManager keeps it in `vpn.data`, not
-in `vpn.secrets`, so `--ask` never prompts for it — a profile without one
-authenticates as the empty user and the server answers `AUTH_FAILED`. The
-widget checks for this up front and shows the fix instead of opening a terminal
-that cannot succeed.
-
-To make a profile connect in one click:
+A freshly imported profile usually has no credentials saved, and there is no
+password prompt running inside the Omarchy shell. To make a profile connect in
+one click:
 
 ```bash
 nmcli connection modify <name> +vpn.data username=<user>
@@ -44,40 +98,57 @@ nmcli connection modify <name> +vpn.data password-flags=0
 nmcli connection modify <name> vpn.secrets 'password=<password>'
 ```
 
-`password-flags=0` means "NetworkManager owns this secret"; an imported profile
-often arrives as `2` (always ask), which makes NetworkManager ignore a stored
-password. Proton VPN's OpenVPN credentials are the per-service username and
-password from the account dashboard, not the Proton account login.
+`password-flags=0` tells NetworkManager to own the password; imported profiles
+usually arrive as `2` ("always ask"), which makes it ignore anything you saved.
+The password then lives in `/etc/NetworkManager/system-connections/`, readable
+by root only.
 
-## Adding a backend
+Without those, clicking a profile opens a terminal running
+`nmcli --ask connection up …` so you can type the password there.
 
-A backend is any `Item` exposing the contract documented at the top of
-`VpnController.qml`: identity (`backendId`, `label`, `glyph`), state
-(`detected`, `connected`, `summary`, `details`, `targets`, `currentKey`),
-feedback (`busy`, `actionStatus`, `lastError`), and the four verbs
-`detect()`, `refresh()`, `connectTo(target)`, `disconnect()`. Drop the file in,
-add it to `VpnController.backends`, and the panel picks it up — nothing in
-`Panel.qml` knows about a specific tool.
+If you are importing a Proton `.ovpn`: the username and password are the
+**OpenVPN/IKEv2** credentials from your Proton dashboard, not your Proton
+account login.
 
-## Interaction
+## Troubleshooting
 
-- Left click opens the panel, right click connects/disconnects the active
-  backend, middle click refreshes.
-- Keyboard: `j`/`k` move, `Enter` connects, `h`/`l` switch backend from the
-  chip row, `s` cycles backends, `/` filters (Proton VPN countries), `d`
-  disconnects, `r` refreshes, `Esc` closes.
+**"No username set" on a profile.** NetworkManager keeps the OpenVPN username
+outside the secrets store, so no password prompt can supply it. Set it with the
+`nmcli connection modify … +vpn.data username=<user>` line above.
 
-## IPC
+**The server rejects credentials that look right.** Check them against the
+tool's own CLI first — for Proton, the OpenVPN credentials are not the account
+password. `journalctl -u NetworkManager -f` shows `AUTH_FAILED` when the server
+is the one saying no.
+
+**Nothing appears in the bar.** Confirm the plugin is enabled with
+`omarchy plugin list`, then `omarchy restart shell`.
+
+**Proton and OpenVPN fight each other.** Proton's daemon tears down foreign
+tunnels when it connects. The widget already shuts other tools down before
+connecting, so use the widget rather than mixing it with the Proton app.
+
+## Scripting
+
+The widget answers on the shell's IPC bus, so keybindings and scripts can drive
+it:
 
 ```bash
-omarchy-shell jkoestinger.vpn status         # "Proton VPN · NL#42, Netherlands"
-omarchy-shell jkoestinger.vpn backends       # "proton openvpn"
-omarchy-shell jkoestinger.vpn use openvpn
-omarchy-shell jkoestinger.vpn connect CH     # country code, profile name, or row key
+omarchy-shell jkoestinger.vpn status       # "Proton VPN · CH#1129 · Zurich, Switzerland"
+omarchy-shell jkoestinger.vpn ip           # current public address
+omarchy-shell jkoestinger.vpn backends     # "proton openvpn"
+omarchy-shell jkoestinger.vpn use openvpn  # switch the panel's active tool
+omarchy-shell jkoestinger.vpn connect CH   # country code, profile name, or row key
+omarchy-shell jkoestinger.vpn quickconnect # fastest available
 omarchy-shell jkoestinger.vpn disconnect
+omarchy-shell jkoestinger.vpn toggle       # open or close the panel
 ```
 
-## Settings
+## Contributing
 
-`refreshIntervalSec`, `preferredBackend` (Auto / Proton VPN / OpenVPN), and
-`favoriteCountries` for the Proton VPN list.
+Adding support for another VPN tool means writing one file. See
+[ARCHITECTURE.md](ARCHITECTURE.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).
