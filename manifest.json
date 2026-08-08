@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "id": "jkoestinger.vpn",
+  "name": "VPN",
+  "version": "1.0.0",
+  "author": "Justin",
+  "license": "MIT",
+  "description": "VPN status and switching in the Omarchy bar, across whichever VPN tools are installed.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "VPN",
+    "description": "Detects installed VPN tools (Proton VPN, OpenVPN) and switches between them from one bar icon.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 15,
+      "preferredBackend": "Auto",
+      "favoriteCountries": "CH,NL,US"
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 5,
+        "max": 600,
+        "step": 5,
+        "defaultValue": 15
+      },
+      {
+        "key": "preferredBackend",
+        "type": "enum",
+        "label": "VPN tool shown first",
+        "options": ["Auto", "Proton VPN", "OpenVPN"],
+        "defaultValue": "Auto",
+        "description": "Auto picks whichever detected tool is connected, otherwise the first one found."
+      },
+      {
+        "key": "favoriteCountries",
+        "type": "string",
+        "label": "Favorite Proton VPN countries (comma separated)",
+        "defaultValue": "CH,NL,US"
+      }
+    ]
+  }
+}

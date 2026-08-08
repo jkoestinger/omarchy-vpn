@@ -1,0 +1,246 @@
+import QtQuick
+import Quickshell.Io
+import "Model.js" as Model
+
+// Owns every VPN backend, decides which one the panel is looking at, and polls
+// the detected ones. The panel talks to `active` and never to a specific tool.
+//
+// Backend contract (duck-typed — a backend is any Item exposing these):
+//
+//   backendId, label, glyph          identity for the switcher chips
+//   supportsFilter, filterPlaceholder whether the panel shows its filter field
+//   filter                           panel writes the current filter text here
+//   detected                         tool is installed and usable
+//   connected, summary               headline state
+//   details                          [{ label, value }] shown while connected
+//   targets                          [{ key, label, detail, glyph, args }]
+//   emptyText                        shown when targets is empty
+//   busy, actionStatus, lastError    transient feedback
+//   detect(), refresh()              probing
+//   connectTo(target), disconnect(), toggleConnection()
+Item {
+  id: root
+  visible: false
+
+  property var settings: ({})
+
+  // Set when the user picks a chip; "" follows `preferredBackend`.
+  property string selectedId: ""
+
+  readonly property var backends: [proton, openvpn]
+  readonly property var availableBackends: backends.filter(function(backend) { return backend.detected })
+  readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 15, 5, 600)
+
+  readonly property var active: {
+    var available = availableBackends
+    if (available.length === 0) return null
+
+    for (var i = 0; i < available.length; i++) {
+      if (available[i].backendId === selectedId) return available[i]
+    }
+
+    var preferred = preferredId()
+    if (preferred !== "") {
+      for (var j = 0; j < available.length; j++) {
+        if (available[j].backendId === preferred) return available[j]
+      }
+    }
+
+    // Auto: whichever tool is actually carrying traffic wins, so the panel
+    // opens on the connection you are using rather than on a list order.
+    for (var k = 0; k < available.length; k++) {
+      if (available[k].connected) return available[k]
+    }
+    return available[0]
+  }
+
+  readonly property bool anyConnected: availableBackends.some(function(backend) { return backend.connected })
+  readonly property bool anyDetected: availableBackends.length > 0
+
+  readonly property var connectedBackend: {
+    var available = availableBackends
+    for (var i = 0; i < available.length; i++) {
+      if (available[i].connected) return available[i]
+    }
+    return null
+  }
+
+  readonly property string barSummary: {
+    if (!anyDetected) return "No VPN tool installed"
+    var backend = connectedBackend
+    if (!backend) return "Not connected"
+    return backend.label + " · " + backend.summary
+  }
+
+  readonly property var switcherOptions: availableBackends.map(function(backend) {
+    return { value: backend.backendId, label: backend.label }
+  })
+
+  // ------------------------------------------------------------- public IP
+
+  property string publicIp: ""
+  property bool ipFetching: false
+  property bool ipFailed: false
+
+  // Identifies the tunnel currently carrying traffic. Any change to it — a
+  // connect, a disconnect, a server switch — means the exit address changed,
+  // which is the only thing that should cost a network round trip. No polling.
+  readonly property string connectionKey: {
+    var backend = connectedBackend
+    return backend ? backend.backendId + "|" + backend.summary : "direct"
+  }
+
+  onConnectionKeyChanged: ipSettle.restart()
+
+  // A shell restart inherits whatever tunnel was already up, so no change ever
+  // fires. One request at startup gives the bar tooltip something to say.
+  Component.onCompleted: ipSettle.restart()
+
+  function refreshPublicIp() {
+    if (ipProcess.running) return
+    ipFetching = true
+    ipFailed = false
+    ipProcess.running = true
+  }
+
+  // Routes take a moment to settle after the tunnel reports up; asking too
+  // early returns the old address.
+  Timer {
+    id: ipSettle
+    interval: 2000
+    repeat: false
+    onTriggered: root.refreshPublicIp()
+  }
+
+  Process {
+    id: ipProcess
+    running: false
+    command: ["curl", "--silent", "--max-time", "6", "checkip.amazonaws.com"]
+    stdout: StdioCollector { id: ipStdout; waitForEnd: true }
+    onExited: function(exitCode) {
+      root.ipFetching = false
+      var address = String(ipStdout.text || "").trim()
+      if (exitCode === 0 && address !== "") {
+        root.publicIp = address
+        root.ipFailed = false
+      } else {
+        root.ipFailed = true
+      }
+    }
+  }
+
+  function setting(name, fallback) {
+    var value = settings ? settings[name] : undefined
+    return value === undefined || value === null ? fallback : value
+  }
+
+  function intSetting(name, fallback, min, max) {
+    var n = parseInt(String(setting(name, fallback)), 10)
+    if (!isFinite(n)) n = fallback
+    if (n < min) n = min
+    if (n > max) n = max
+    return n
+  }
+
+  function preferredId() {
+    var preferred = String(setting("preferredBackend", "Auto"))
+    if (preferred === "Proton VPN") return "proton"
+    if (preferred === "OpenVPN") return "openvpn"
+    return ""
+  }
+
+  function selectBackend(backendId) {
+    root.selectedId = String(backendId || "")
+    var backend = root.active
+    if (backend) backend.refresh()
+  }
+
+  // Two tunnels up at once is never what anyone means by "connect". Bringing
+  // one up therefore takes every other backend down first, and the new
+  // connection waits for them so the tools do not fight over the routes.
+  function connectVia(backend, target) {
+    runExclusive(backend, function() { backend.connectTo(target) })
+  }
+
+  function toggleActive() {
+    var backend = root.active
+    if (!backend) return
+    if (backend.connected) {
+      backend.disconnect()
+      return
+    }
+    runExclusive(backend, function() { backend.toggleConnection() })
+  }
+
+  function runExclusive(backend, action) {
+    var others = otherConnected(backend)
+    if (others.length === 0) {
+      action()
+      return
+    }
+
+    for (var i = 0; i < others.length; i++) others[i].disconnect()
+    root._pendingAction = action
+    root._pendingBackend = backend
+    exclusiveWait.ticks = 0
+    exclusiveWait.restart()
+  }
+
+  function otherConnected(backend) {
+    return availableBackends.filter(function(candidate) {
+      return candidate !== backend && candidate.connected
+    })
+  }
+
+  property var _pendingAction: null
+  property var _pendingBackend: null
+
+  // The backends report their new state through their own polling, so wait for
+  // them to actually report down rather than assuming the disconnect landed.
+  // Giving up after ~10s still runs the action: a stuck teardown should not
+  // silently swallow the connect the user asked for.
+  Timer {
+    id: exclusiveWait
+    property int ticks: 0
+    interval: 700
+    repeat: true
+    running: false
+    onTriggered: {
+      ticks += 1
+      var action = root._pendingAction
+      if (!action) { exclusiveWait.running = false; return }
+
+      if (root.otherConnected(root._pendingBackend).length === 0 || ticks >= 15) {
+        exclusiveWait.running = false
+        root._pendingAction = null
+        root._pendingBackend = null
+        action()
+      }
+    }
+  }
+
+  function refreshAll() {
+    for (var i = 0; i < backends.length; i++) {
+      if (backends[i].detected) backends[i].refresh()
+      else backends[i].detect()
+    }
+  }
+
+  ProtonBackend {
+    id: proton
+    settings: root.settings
+  }
+
+  OpenVpnBackend {
+    id: openvpn
+    settings: root.settings
+  }
+
+  Timer {
+    interval: root.refreshIntervalSec * 1000
+    repeat: true
+    running: true
+    triggeredOnStart: true
+    onTriggered: root.refreshAll()
+  }
+}
