@@ -9,6 +9,8 @@ profiles NetworkManager holds. Only the tools
 found on your machine appear — install none and the widget tells you so; install
 several and a chip row lets you switch between them.
 
+<img src="preview.png" alt="The VPN panel open in the Omarchy bar, showing a Proton VPN connection to Zurich and a country list" width="365">
+
 ## Install
 
 ```bash
