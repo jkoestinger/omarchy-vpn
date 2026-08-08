@@ -27,7 +27,7 @@ Item {
   // Set when the user picks a chip; "" follows `preferredBackend`.
   property string selectedId: ""
 
-  readonly property var backends: [proton, openvpn]
+  readonly property var backends: [proton, mullvad, openvpn]
   readonly property var availableBackends: backends.filter(function(backend) { return backend.detected })
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 15, 5, 600)
 
@@ -145,6 +145,7 @@ Item {
   function preferredId() {
     var preferred = String(setting("preferredBackend", "Auto"))
     if (preferred === "Proton VPN") return "proton"
+    if (preferred === "Mullvad") return "mullvad"
     if (preferred === "OpenVPN") return "openvpn"
     return ""
   }
@@ -179,7 +180,16 @@ Item {
       return
     }
 
-    for (var i = 0; i < others.length; i++) others[i].disconnect()
+    for (var i = 0; i < others.length; i++) {
+      // Mullvad's lockdown mode drops all traffic the moment its tunnel goes
+      // down, which is exactly when the incoming connect needs the network.
+      // Say so up front rather than let it fail as a timeout.
+      if (others[i].lockdownMode === true) {
+        backend.lastError = others[i].label + " blocks all traffic while it is disconnected, "
+          + "so connecting will not get through. Turn it off with: mullvad lockdown-mode set off"
+      }
+      others[i].disconnect()
+    }
     root._pendingAction = action
     root._pendingBackend = backend
     exclusiveWait.ticks = 0
@@ -228,6 +238,11 @@ Item {
 
   ProtonBackend {
     id: proton
+    settings: root.settings
+  }
+
+  MullvadBackend {
+    id: mullvad
     settings: root.settings
   }
 

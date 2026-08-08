@@ -12,6 +12,7 @@ a tool means writing one file and adding one line.
 | `Panel.qml` | Bar button and popup. Layout, cursor, keyboard, IPC surface |
 | `VpnController.qml` | Owns the backends, picks the active one, enforces exclusivity, fetches the public IP |
 | `ProtonBackend.qml` | Proton VPN, via the `protonvpn` CLI |
+| `MullvadBackend.qml` | Mullvad, via the `mullvad` CLI |
 | `OpenVpnBackend.qml` | OpenVPN, via NetworkManager |
 | `Model.js` | Pure parsing and row-building. No QML, no side effects |
 
@@ -24,7 +25,7 @@ duck-types, so a backend that omits something simply renders as blank.
 
 | Property | Meaning |
 |----------|---------|
-| `backendId` | Stable key used by settings and IPC (`proton`, `openvpn`) |
+| `backendId` | Stable key used by settings and IPC (`proton`, `mullvad`, `openvpn`) |
 | `label` | Name on the switcher chip and hero |
 | `glyph` | Nerd Font character for the hero icon |
 | `supportsFilter`, `filterPlaceholder` | Whether the panel shows its filter field |
@@ -49,8 +50,13 @@ duck-types, so a backend that omits something simply renders as blank.
 `toggleConnection()`.
 
 `toggleConnection()` is the backend's own idea of a default connection — Proton
-picks the fastest server; OpenVPN connects the only profile if there is exactly
-one, and otherwise asks the user to pick.
+picks the fastest server; Mullvad reuses its stored relay constraint; OpenVPN
+connects the only profile if there is exactly one, and otherwise asks the user to
+pick.
+
+A backend may also expose `lockdownMode`, meaning "this tool blocks all traffic
+while it is disconnected". The controller warns about it before tearing that
+backend down for another one.
 
 ## Adding a backend
 
@@ -87,6 +93,27 @@ moves between releases. `parseProtonStatus` matches on the leading key of each
 line rather than on line position, and handles both the modern combined form
 (`Server: CH#1129 in Zurich, Switzerland`) and older separate `Country`/`City`
 keys.
+
+**Mullvad's two-step connect.** `mullvad connect` takes no target: the relay
+comes from a constraint stored in the daemon by `mullvad relay set location`.
+`connectTo` therefore runs two commands and stops if the first fails, since
+connecting against a stale constraint would put up a tunnel in the wrong country
+and report it as the one that was clicked. The chain hops through a zero-interval
+timer rather than starting the second command inside the first one's `onExited`,
+and `_working` covers that gap so a second click cannot interleave.
+
+**Mullvad status is JSON.** `mullvad status -j` avoids parsing a CLI that prints
+an ANSI spinner, and it carries more than the text form: the endpoint, the tunnel
+interface, and whether traffic is currently blocked. `details` changes shape with
+`state` — an object while connected, connecting, or disconnected, a bare string
+while disconnecting — so the parser type-checks before reaching in, and anything
+unparseable stays "no idea" rather than becoming "disconnected".
+
+**Lockdown mode.** Distinct from the `error` state. `locked_down` in the status
+payload means traffic is being blocked right now and is only reported while the
+tunnel is down; the setting itself is read separately with
+`mullvad lockdown-mode get`, because the case that matters — Mullvad connected,
+another backend about to take over — is exactly when the payload omits it.
 
 **OpenVPN discovery.** Two passes. `nmcli -t -f NAME,UUID,TYPE,ACTIVE connection
 show` gives every VPN-typed connection; a second call over just those uuids

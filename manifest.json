@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "VPN",
-    "description": "Detects installed VPN tools (Proton VPN, OpenVPN) and switches between them from one bar icon.",
+    "description": "Detects installed VPN tools (Proton VPN, Mullvad, OpenVPN) and switches between them from one bar icon.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",
@@ -37,14 +37,14 @@
         "key": "preferredBackend",
         "type": "enum",
         "label": "VPN tool shown first",
-        "options": ["Auto", "Proton VPN", "OpenVPN"],
+        "options": ["Auto", "Proton VPN", "Mullvad", "OpenVPN"],
         "defaultValue": "Auto",
         "description": "Auto picks whichever detected tool is connected, otherwise the first one found."
       },
       {
         "key": "favoriteCountries",
         "type": "string",
-        "label": "Favorite Proton VPN countries (comma separated)",
+        "label": "Favorite countries (comma separated)",
         "defaultValue": "CH,NL,US"
       }
     ]

@@ -30,7 +30,7 @@ Panel {
   readonly property bool filterVisible: backend !== null && backend.supportsFilter
   readonly property bool headerHasCursor: cursorActive && focusSection === "header"
   readonly property string statusLine: {
-    if (!backend) return "Install Proton VPN or OpenVPN to use this widget."
+    if (!backend) return "Install Proton VPN, Mullvad, or OpenVPN to use this widget."
     return backend.actionStatus !== "" ? backend.actionStatus : backend.lastError
   }
 
