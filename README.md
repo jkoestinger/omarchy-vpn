@@ -11,6 +11,9 @@ several and a chip row lets you switch between them.
 
 <img src="preview.png" alt="The VPN panel open in the Omarchy bar, showing a Proton VPN connection to Zurich and a country list" width="365">
 
+Each installed tool gets its own chip and its own view — Proton VPN above,
+[Mullvad](#mullvad) and [NetworkManager](#networkmanager-profiles) below.
+
 ## Install
 
 ```bash
@@ -94,6 +97,8 @@ Configure these in **Setup › Plugins**, or in the widget's entry in
 
 ## Mullvad
 
+<img src="preview-mullvad.png" alt="The VPN panel on the Mullvad chip, showing Any location followed by a country list" width="365">
+
 Mullvad separates picking a relay from connecting: `mullvad relay set location`
 records a constraint, `mullvad connect` brings the tunnel up against it. The
 widget does both for you, so clicking a country connects to it and the choice
@@ -114,6 +119,8 @@ mullvad lockdown-mode set off
 ```
 
 ## NetworkManager profiles
+
+<img src="preview-networkmanager.png" alt="The VPN panel on the NetworkManager chip, listing two OpenVPN profiles and one WireGuard profile" width="365">
 
 Neither OpenVPN nor WireGuard has a daemon of its own to ask, so both come from
 NetworkManager — the thing that imports and stores tunnel configs on a desktop.
