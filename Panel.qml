@@ -17,6 +17,12 @@ Panel {
   property string focusSection: "rows"
   property int rowIndex: 0
   property int toggleIndex: 0
+  // Inside the header: 0 is the gear, 1 the master switch.
+  property int headerIndex: 1
+  // The widget's own settings, as opposed to the tool's. They replace the body
+  // rather than fold out below it: nothing in the connect list means anything
+  // while you are deciding which tools the widget should know about.
+  property bool providersOpen: false
   // Settings start folded away: they are the part of the panel you touch once
   // and then leave alone. Kept for the session, not per open.
   property bool settingsExpanded: false
@@ -29,17 +35,39 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   readonly property var backend: vpn.active
-  readonly property var rows: backend ? backend.targets : []
+  // One tool per row, switch on the right: the whole widget setting is which
+  // of the tools on this machine it should bother with.
+  readonly property var providerRows: vpn.detectedBackends.map(function(entry) {
+    var hidden = vpn.isHidden(entry.backendId)
+    return {
+      key: "provider:" + entry.backendId,
+      backendId: entry.backendId,
+      label: entry.label,
+      detail: hidden ? "Hidden" : (entry.connected ? "Connected" : "Shown"),
+      glyph: entry.glyph,
+      hidden: hidden
+    }
+  })
+  readonly property var rows: providersOpen ? providerRows : (backend ? backend.targets : [])
   // Tool settings, for the backends that have any. A backend without them
   // simply has no block here.
   readonly property var toggles: backend && backend.toggles ? backend.toggles : []
-  readonly property bool settingsAvailable: toggles.length > 0
+  readonly property bool settingsAvailable: !providersOpen && toggles.length > 0
   readonly property bool settingsVisible: settingsAvailable && settingsExpanded
-  readonly property bool switcherVisible: vpn.availableBackends.length > 1
-  readonly property bool filterVisible: backend !== null && backend.supportsFilter
+  readonly property bool switcherVisible: !providersOpen && vpn.availableBackends.length > 1
+  readonly property bool filterVisible: !providersOpen && backend !== null && backend.supportsFilter
+  readonly property bool masterSwitchVisible: backend !== null
   readonly property bool headerHasCursor: cursorActive && focusSection === "header"
+  readonly property bool gearHasCursor: headerHasCursor && headerIndex === 0
+  readonly property bool switchHasCursor: headerHasCursor && headerIndex === 1
   readonly property string statusLine: {
-    if (!backend) return "Install Proton VPN, Mullvad, OpenVPN, or WireGuard to use this widget."
+    if (providersOpen) return ""
+    if (!backend) {
+      if (vpn.detectedBackends.length > 0) return "Every VPN tool is hidden. Turn one back on with the gear."
+      return vpn.setupHint !== ""
+        ? vpn.setupHint
+        : "Install Proton VPN, Mullvad, OpenVPN, or WireGuard to use this widget."
+    }
     return backend.actionStatus !== "" ? backend.actionStatus : backend.lastError
   }
 
@@ -47,6 +75,13 @@ Panel {
     if (rows.length === 0 && focusSection === "rows") focusSection = "header"
     if (!settingsAvailable && focusSection === "hero") focusSection = "header"
     if (!settingsVisible && focusSection === "toggles") focusSection = settingsAvailable ? "hero" : "header"
+    if (!switcherVisible && focusSection === "switcher") focusSection = "header"
+    // The master switch is gone without a backend, so the gear is all the
+    // header has left — and it is the way back from a widget with everything
+    // hidden, which is exactly when that happens.
+    if (!masterSwitchVisible) headerIndex = 0
+    if (headerIndex < 0) headerIndex = 0
+    if (headerIndex > 1) headerIndex = 1
     if (rowIndex >= rows.length) rowIndex = Math.max(0, rows.length - 1)
     if (rowIndex < 0) rowIndex = 0
     if (toggleIndex >= toggles.length) toggleIndex = Math.max(0, toggles.length - 1)
@@ -59,6 +94,7 @@ Panel {
 
     if (dx !== 0) {
       if (focusSection === "switcher") stepBackend(dx)
+      else if (focusSection === "header") stepHeader(dx)
       return
     }
     if (dy === 0) return
@@ -134,10 +170,17 @@ Panel {
     if (panelFlick) panelFlick.contentY = 0
   }
 
-  function setHeaderCursor() {
+  function setHeaderCursor(index) {
     cursorActive = true
     focusSection = "header"
+    if (index !== undefined) headerIndex = index
+    if (!masterSwitchVisible) headerIndex = 0
     if (panelFlick) panelFlick.contentY = 0
+  }
+
+  function stepHeader(direction) {
+    if (!masterSwitchVisible) return
+    headerIndex = Math.max(0, Math.min(1, headerIndex + direction))
   }
 
   function setRowCursor(index) {
@@ -174,13 +217,52 @@ Panel {
     else if (settingsExpanded) setHeroCursor()
   }
 
+  // The gear and the provider rows work without a backend — they are how you
+  // get one back — so they are checked before the "nothing detected" bail.
   function activateCursor() {
     ensureCursor()
+    if (focusSection === "header") {
+      if (headerIndex === 0) toggleProviders()
+      else if (backend) vpn.toggleActive()
+      return
+    }
+    if (focusSection === "rows" && rows.length > 0) {
+      activateRow(rows[rowIndex])
+      return
+    }
     if (!backend) return
-    if (focusSection === "header") vpn.toggleActive()
-    else if (focusSection === "hero") toggleSettings()
+    if (focusSection === "hero") toggleSettings()
     else if (focusSection === "toggles" && toggles.length > 0) flipToggle(toggleIndex)
-    else if (focusSection === "rows" && rows.length > 0) activateRow(rows[rowIndex])
+  }
+
+  // A view, not a drawer: the cursor stays on the gear that opened it, which is
+  // also the way out.
+  function toggleProviders() {
+    providersOpen = !providersOpen
+    rowIndex = 0
+    toggleIndex = 0
+    filterField.text = ""
+    setHeaderCursor(0)
+  }
+
+  function toggleProvider(row) {
+    if (!row || row.backendId === undefined) return
+    var next = Model.toggleBackendId(vpn.hiddenBackendIds, row.backendId)
+    saveSetting("hiddenBackends", Model.joinBackendIds(next))
+  }
+
+  // Widget settings live in this widget's shell.json entry, the same place the
+  // Omarchy settings dialog writes them, so the two agree on the next reload.
+  function saveSetting(key, value) {
+    var next = {}
+    for (var name in settings) {
+      if (name !== "id") next[name] = settings[name]
+    }
+    next[key] = value
+    root.settings = next
+    if (bar && bar.shell && typeof bar.shell.updateEntryInline === "function") {
+      bar.shell.updateEntryInline(root.moduleName, next)
+    }
   }
 
   // Settings go straight to the backend: they change how the tool behaves, not
@@ -199,7 +281,12 @@ Panel {
   }
 
   function activateRow(row) {
-    if (!backend || !row) return
+    if (!row) return
+    if (providersOpen) {
+      toggleProvider(row)
+      return
+    }
+    if (!backend) return
     // Through the controller, never straight to the backend: picking a tunnel
     // means the others come down first.
     vpn.connectVia(backend, row)
@@ -240,6 +327,10 @@ Panel {
     cursorActive = false
     rowIndex = 0
     toggleIndex = 0
+    headerIndex = 1
+    // The tool settings stay however you left them; this view does not. You
+    // open the panel to connect, not to reconsider which tools exist.
+    providersOpen = false
     focusSection = "rows"
     filterField.text = ""
     if (panelFlick) panelFlick.contentY = 0
@@ -385,20 +476,23 @@ Panel {
           spacing: Style.space(12)
 
           // Status bar for the whole widget: where traffic is coming out on the
-          // left, the one master switch on the right. Both sit above the
-          // backend chips because they describe the connection, not the tool.
+          // left, the gear and the one master switch on the right. All of it
+          // sits above the backend chips because it describes the connection
+          // and the widget, not whichever tool is being looked at.
           Item {
             id: header
             width: parent.width
-            implicitHeight: Math.max(ipLabel.implicitHeight, masterSwitch.implicitHeight)
-            readonly property bool ringVisible: root.headerHasCursor
-            function focusHeader() { root.setHeaderCursor() }
+            implicitHeight: Math.max(ipLabel.implicitHeight,
+              Math.max(gearButton.implicitHeight, masterSwitch.implicitHeight))
+            readonly property real controlsWidth: gearButton.width
+              + (masterSwitch.visible ? masterSwitch.width + Style.space(8) : 0)
+              + Style.space(12)
 
             Item {
               id: ipLabel
               anchors.left: parent.left
               anchors.verticalCenter: parent.verticalCenter
-              width: Math.min(ipRow.implicitWidth, parent.width - masterSwitch.width - Style.space(12))
+              width: Math.min(ipRow.implicitWidth, parent.width - header.controlsWidth)
               height: ipRow.implicitHeight
 
               // Only an address is worth copying; a placeholder is not.
@@ -443,16 +537,30 @@ Panel {
               }
             }
 
+            PanelActionButton {
+              id: gearButton
+              anchors.right: masterSwitch.visible ? masterSwitch.left : parent.right
+              anchors.rightMargin: masterSwitch.visible ? Style.space(8) : 0
+              anchors.verticalCenter: parent.verticalCenter
+              iconText: Model.GLYPH_COG
+              tooltipText: root.providersOpen ? "Back" : "Widget settings"
+              hasCursor: root.gearHasCursor
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onHovered: function(on) { if (on) root.setHeaderCursor(0) }
+              onClicked: root.toggleProviders()
+            }
+
             ToggleSwitch {
               id: masterSwitch
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
-              visible: root.backend !== null
+              visible: root.masterSwitchVisible
               checked: vpn.anyConnected
               busy: root.backend ? root.backend.busy : false
-              hasCursor: header.ringVisible
+              hasCursor: root.switchHasCursor
               foreground: root.foreground
-              onHovered: function(on) { if (on) header.focusHeader() }
+              onHovered: function(on) { if (on) root.setHeaderCursor(1) }
               onToggled: vpn.toggleActive()
 
               PanelToolTip {
@@ -486,6 +594,7 @@ Panel {
           // the hero exactly as it was.
           CursorSurface {
             id: heroSurface
+            visible: !root.providersOpen
             width: parent.width
             implicitHeight: hero.implicitHeight + Style.spacing.rowPaddingX
             hasCursor: root.cursorActive && root.focusSection === "hero"
@@ -549,7 +658,7 @@ Panel {
           }
 
           Column {
-            visible: root.backend !== null && root.backend.details.length > 0
+            visible: !root.providersOpen && root.backend !== null && root.backend.details.length > 0
             width: parent.width
             spacing: Style.spacing.labelGap
 
@@ -589,7 +698,7 @@ Panel {
           }
 
           PanelSeparator {
-            visible: root.backend !== null
+            visible: root.providersOpen || root.backend !== null
             foreground: root.foreground
           }
 
@@ -615,12 +724,15 @@ Panel {
           }
 
           Column {
-            visible: root.backend !== null
+            visible: root.providersOpen || root.backend !== null
             width: parent.width
             spacing: Style.space(10)
 
             PanelSectionHeader {
-              text: root.filterVisible && root.backend && root.backend.filter !== "" ? "MATCHING" : "CONNECT"
+              text: {
+                if (root.providersOpen) return "PROVIDERS"
+                return root.filterVisible && root.backend && root.backend.filter !== "" ? "MATCHING" : "CONNECT"
+              }
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -628,7 +740,10 @@ Panel {
             Text {
               visible: root.rows.length === 0
               width: parent.width
-              text: root.backend ? root.backend.emptyText : ""
+              text: {
+                if (root.providersOpen) return "No VPN tool detected on this machine."
+                return root.backend ? root.backend.emptyText : ""
+              }
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall
@@ -662,7 +777,13 @@ Panel {
     id: targetRow
     property var row: null
     property int cursorIndex: 0
-    readonly property bool isCurrent: root.backend !== null
+    // A provider row is the same row with a switch where the check mark goes:
+    // it says whether the widget uses that tool, not whether it is connected.
+    readonly property bool isProvider: row !== null && row.hidden !== undefined
+    // A hidden tool reads as switched off rather than as a row you could pick.
+    readonly property bool rowMuted: isProvider && row.hidden === true
+    readonly property bool isCurrent: !isProvider
+      && root.backend !== null
       && row
       && row.key === root.backend.currentKey
 
@@ -690,7 +811,7 @@ Panel {
 
       Text {
         text: targetRow.row ? targetRow.row.glyph : ""
-        color: root.foreground
+        color: targetRow.rowMuted ? root.dim : root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.icon
         Layout.alignment: Qt.AlignVCenter
@@ -704,7 +825,7 @@ Panel {
         Text {
           Layout.fillWidth: true
           text: targetRow.row ? targetRow.row.label : ""
-          color: root.foreground
+          color: targetRow.rowMuted ? root.dim : root.foreground
           font.family: root.fontFamily
           font.pixelSize: Style.font.body
           elide: Text.ElideRight
@@ -727,6 +848,17 @@ Panel {
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.icon
+        Layout.alignment: Qt.AlignVCenter
+      }
+
+      ToggleSwitch {
+        visible: targetRow.isProvider
+        checked: targetRow.isProvider && !targetRow.row.hidden
+        foreground: root.foreground
+        // Same reason the tool settings do it: the row owns the click and the
+        // cursor ring, so a switch that owned them too would read as a second
+        // target inside the first.
+        interactive: false
         Layout.alignment: Qt.AlignVCenter
       }
     }

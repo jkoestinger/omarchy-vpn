@@ -6,8 +6,8 @@ actually have installed.
 
 It supports **Proton VPN**, **Mullvad**, and the **OpenVPN** and **WireGuard**
 profiles NetworkManager holds. Only the tools
-found on your machine appear — install none and the widget tells you so; install
-several and a chip row lets you switch between them.
+that have something to offer appear — install none and the widget tells you so;
+have several and a chip row lets you switch between them.
 
 <img src="preview.png" alt="The VPN panel open in the Omarchy bar, showing a Proton VPN connection to Zurich and a country list" width="365">
 
@@ -49,6 +49,11 @@ Inside the panel:
 - **The switch** top-right connects or disconnects. Turning one VPN on shuts
   every other one off first — you never end up with two tunnels fighting over
   your routes.
+- **The gear** to its left opens the widget's own settings, which for now is one
+  switch per tool found on this machine. Turn one off and the widget forgets it
+  entirely: no chip, no polling, and it stops counting toward the bar icon. Turn
+  it back on from the same place. The choice is written to
+  `~/.config/omarchy/shell.json` and survives a restart.
 - **The chips** below choose which tool you are looking at. They only appear
   when you have more than one installed.
 - **The name row** is also a drawer. Tools with settings of their own get a
@@ -68,8 +73,9 @@ Inside the panel:
 Keyboard, once the panel is open: `j`/`k` or arrows move — through the header,
 the chips, the name row, the settings switches if they are open, then the list —
 `Enter` connects, flips a switch, or opens and closes the settings drawer,
-depending on what the cursor is on. `h`/`l` move along the chip row, `s` cycles
-tools, `/` searches countries, `d` disconnects, `r` refreshes, `Esc` closes.
+depending on what the cursor is on. `h`/`l` move along the chip row and between
+the gear and the master switch in the header, `s` cycles tools, `/` searches
+countries, `d` disconnects, `r` refreshes, `Esc` closes.
 
 The public IP is fetched from `checkip.amazonaws.com` — never on a timer, only
 when the connection changes, when the panel first opens, or when you ask.
@@ -94,6 +100,7 @@ Configure these in **Setup › Plugins**, or in the widget's entry in
 | `refreshIntervalSec` | `15` | How often the connection status is polled |
 | `preferredBackend` | `Auto` | Which tool the panel opens on. `Auto` picks whichever is connected |
 | `favoriteCountries` | `CH,NL,US` | Country codes pinned to the top of the Proton VPN and Mullvad lists |
+| `hiddenBackends` | *(empty)* | Tools the widget ignores entirely: `proton`, `mullvad`, `networkmanager`. The gear inside the panel writes this |
 
 ## Mullvad
 
@@ -130,6 +137,11 @@ They share one chip, and the row icon says which is which. Import one with:
 nmcli connection import type openvpn file ~/Downloads/office.ovpn
 nmcli connection import type wireguard file ~/Downloads/home.conf
 ```
+
+NetworkManager runs on every desktop, so the chip appears only once you have a
+profile it can actually carry — an OpenVPN one with `openvpn` installed, or a
+WireGuard one with `wireguard-tools`. Until then the panel shows the import
+command above rather than a chip leading to an empty list.
 
 A tunnel you started some other way is not listed: a bare `openvpn` process,
 `openvpn-client@.service`, or a `wg-quick@` unit. Neither is a tunnel another

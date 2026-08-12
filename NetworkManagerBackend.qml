@@ -19,7 +19,6 @@ Item {
   readonly property bool supportsFilter: false
   readonly property string filterPlaceholder: ""
 
-  property bool detected: false
   property var profiles: []
   property string actionStatus: ""
   property string lastError: ""
@@ -29,6 +28,18 @@ Item {
   // gets the chip, and a profile of a kind you cannot run simply never appears.
   property bool _openvpnPresent: false
   property bool _wireguardPresent: false
+  property int _probesDone: 0
+  property bool _probed: false
+
+  readonly property bool _toolsPresent: _nmcliPresent && (_openvpnPresent || _wireguardPresent)
+  // Having the tools is not having anything to connect to. NetworkManager is
+  // the one backend whose list can be legitimately empty on a working install,
+  // and a chip leading to an empty list is a chip worth not drawing.
+  readonly property bool detected: _toolsPresent && profiles.length > 0
+
+  // Said instead of the panel's "install a VPN tool" line, which is unhelpful
+  // advice for someone who has the tools and only lacks a profile.
+  readonly property string setupHint: _toolsPresent && profiles.length === 0 ? emptyText : ""
   property int _desired: -1
   property var _pendingTarget: null
   // Connecting can take two commands — down the profile that is up, then up the
@@ -59,20 +70,30 @@ Item {
     return value === undefined || value === null ? fallback : value
   }
 
+  // `detected` now depends on the profile list, so the controller keeps calling
+  // detect() on a machine that has the tools and no profiles. The binaries do
+  // not come and go; once probed, this is a plain refresh rather than three
+  // more processes every poll.
   function detect() {
+    if (_probed) {
+      refresh()
+      return
+    }
     if (nmcliProbe.running || openvpnProbe.running || wireguardProbe.running) return
     nmcliProbe.running = true
     openvpnProbe.running = true
     wireguardProbe.running = true
   }
 
-  function _updateDetected() {
-    root.detected = _nmcliPresent && (_openvpnPresent || _wireguardPresent)
-    if (root.detected) root.refresh()
+  function _probeFinished() {
+    root._probesDone += 1
+    if (root._probesDone < 3) return
+    root._probed = true
+    if (root._toolsPresent) root.refresh()
   }
 
   function refresh() {
-    if (!detected || listProcess.running) return
+    if (!_toolsPresent || listProcess.running) return
     listProcess.running = true
   }
 
@@ -150,9 +171,20 @@ Item {
     actionStatusTimer.restart()
   }
 
+  // A profile is only eligible if the tool that carries its kind is installed:
+  // NetworkManager lists an OpenVPN profile whether or not anything can run it.
+  function runnable(profile) {
+    return profile.kind === "wireguard" ? _wireguardPresent : _openvpnPresent
+  }
+
   function applyProfiles(list) {
-    root.profiles = list
-    if (_desired !== -1 && (Model.activeNmProfile(list) !== null) === (_desired === 1)) _desired = -1
+    var eligible = []
+    for (var i = 0; i < list.length; i++) {
+      if (runnable(list[i])) eligible.push(list[i])
+    }
+
+    root.profiles = eligible
+    if (_desired !== -1 && (Model.activeNmProfile(eligible) !== null) === (_desired === 1)) _desired = -1
   }
 
   Timer {
@@ -195,7 +227,7 @@ Item {
     running: true
     onExited: function(exitCode) {
       root._nmcliPresent = exitCode === 0
-      root._updateDetected()
+      root._probeFinished()
     }
   }
 
@@ -205,7 +237,7 @@ Item {
     running: true
     onExited: function(exitCode) {
       root._openvpnPresent = exitCode === 0
-      root._updateDetected()
+      root._probeFinished()
     }
   }
 
@@ -218,7 +250,7 @@ Item {
     running: true
     onExited: function(exitCode) {
       root._wireguardPresent = exitCode === 0
-      root._updateDetected()
+      root._probeFinished()
     }
   }
 
