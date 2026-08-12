@@ -88,7 +88,10 @@ the switch flip the instant it is clicked instead of waiting a poll cycle.
 Reality reasserts itself once the tool agrees, or after the settle timer gives
 up.
 
-**Public IP.** Fetched with `curl checkip.amazonaws.com`, never polled. The
+**Public IP.** Fetched with `curl https://checkip.amazonaws.com`, never polled.
+The scheme is explicit — over plain HTTP anyone on the path could forge the
+address the panel presents as proof the tunnel works — and the response is only
+believed if it parses as an address literal. The
 trigger is `connectionKey` — a string built from the connected backend's id and
 summary — so a connect, a disconnect, or a server switch all invalidate it. A
 2s delay lets routes settle first, since asking too early returns the old
@@ -244,3 +247,24 @@ registered for target …` appears once per extra monitor. Every first-party
 widget logs the same thing; it is not a defect.
 
 Check a manifest change with `omarchy plugin validate .` before committing.
+
+## Tests
+
+`Model.js` is where every assumption about how three CLIs format their output
+lives, and it is the one file that runs without a QML engine. The suite covers
+it:
+
+```bash
+node tests/run.js
+qmllint *.qml          # one file per invocation; a batch exits 255 regardless
+```
+
+No framework and no `package.json` — a suite that needed installing would not
+get run, and the plugin is not built. `tests/run.js` evaluates `Model.js` in the
+node realm and collects the names it declares, since a `.pragma library` has no
+exports. CI runs the same command on push and pull request.
+
+The QML halves are not covered: they are `Process` plumbing and bindings, and
+the interesting logic was pushed into `Model.js` precisely so it could be
+tested. When a bug turns out to live in a parser, the fix belongs there with a
+case beside it.

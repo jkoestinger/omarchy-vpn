@@ -15,6 +15,33 @@ var GLYPH_COG = String.fromCodePoint(0xF0493)
 
 // ----------------------------------------------------------------- shared
 
+// The exit address lookup answers with a bare address and nothing else. A
+// captive portal's login page, a proxy's error body, or anything else that
+// came back with it is not an answer — and this is the one number a user reads
+// to decide whether the tunnel is carrying their traffic, so rendering
+// whatever arrived would be the widget confirming a route it never saw.
+// Returns "" for anything that is not an address literal.
+function parsePublicIp(raw) {
+  var text = String(raw || "").trim()
+  // Longest possible IPv6 text form; anything longer is not an address.
+  if (text === "" || text.length > 45) return ""
+
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(text)) {
+    var octets = text.split(".")
+    for (var i = 0; i < octets.length; i++) {
+      if (parseInt(octets[i], 10) > 255) return ""
+    }
+    return text
+  }
+
+  // IPv6 has too many legal spellings to re-implement here, so this checks the
+  // alphabet and the shape rather than the grouping.
+  if (/^[0-9a-fA-F:]+$/.test(text) && text.indexOf("::") === text.lastIndexOf("::")) {
+    if (text.indexOf(":") !== -1 && !/:::/.test(text)) return text.toLowerCase()
+  }
+  return ""
+}
+
 function elide(text, limit) {
   var value = String(text || "").replace(/\s+/g, " ").trim()
   return value.length > limit ? value.substring(0, limit - 1) + "…" : value
@@ -351,9 +378,10 @@ function unescapeNmcli(value) {
 }
 
 // Generated on the fly for a device someone else brought up, rather than a
-// profile on disk. An older nmcli that does not report FILENAME leaves this
-// empty, in which case the connection is kept — better a stray row than a
-// backend that lists nothing at all.
+// profile on disk. Empty means the field was never asked for: nmcli refuses a
+// listing that names a field it does not know, so an nmcli too old for
+// FILENAME is retried without it — see NetworkManagerBackend. Such a
+// connection is kept, since a stray row beats a backend that lists nothing.
 function isVolatileConnection(filename) {
   return String(filename || "").indexOf("/run/") === 0
 }
@@ -745,8 +773,14 @@ function mullvadCurrentKey(status, countries) {
 //   Autoconnect: off
 //   Block traffic when the VPN is disconnected: off
 //   Local network sharing setting: block
+//
+// One shell means one exit code — the last subcommand's — so a subcommand that
+// failed or that this version of the CLI does not have leaves no line and no
+// error. `seen` is which answers actually arrived: an unanswered setting is
+// unknown, not off. Reporting lockdown mode as off while it is on is the one
+// mistake a VPN widget must not make.
 function parseMullvadSettings(raw) {
-  var settings = { autoconnect: false, lockdown: false, lan: false, loaded: false }
+  var settings = { autoconnect: false, lockdown: false, lan: false, seen: {}, loaded: false }
   var lines = String(raw || "").split("\n")
 
   for (var i = 0; i < lines.length; i++) {
@@ -760,26 +794,39 @@ function parseMullvadSettings(raw) {
 
     if (key === "autoconnect") {
       settings.autoconnect = value === "on"
-      settings.loaded = true
+      settings.seen.autoconnect = true
     } else if (key.indexOf("block traffic") === 0) {
       settings.lockdown = value === "on"
-      settings.loaded = true
+      settings.seen.lockdown = true
     } else if (key.indexOf("local network sharing") === 0) {
       settings.lan = value === "allow"
-      settings.loaded = true
+      settings.seen.lan = true
     }
   }
+
+  settings.loaded = settings.seen.autoconnect === true
+    || settings.seen.lockdown === true
+    || settings.seen.lan === true
   return settings
 }
 
+// A switch is drawn only for a setting the daemon answered for. A partial read
+// shows fewer switches rather than a full row of confident wrong ones.
 function mullvadToggles(settings) {
   if (!settings || !settings.loaded) return []
 
-  return [
-    toggle("autoconnect", "Connect on startup", "Up as soon as the daemon starts", settings.autoconnect),
-    toggle("lockdown", "Lockdown mode", "No traffic at all while down", settings.lockdown),
-    toggle("lan", "Allow local network", "Reach printers and NAS while up", settings.lan)
-  ]
+  var seen = settings.seen || {}
+  var toggles = []
+  if (seen.autoconnect === true) {
+    toggles.push(toggle("autoconnect", "Connect on startup", "Up as soon as the daemon starts", settings.autoconnect))
+  }
+  if (seen.lockdown === true) {
+    toggles.push(toggle("lockdown", "Lockdown mode", "No traffic at all while down", settings.lockdown))
+  }
+  if (seen.lan === true) {
+    toggles.push(toggle("lan", "Allow local network", "Reach printers and NAS while up", settings.lan))
+  }
+  return toggles
 }
 
 function mullvadToggleArgs(key, value) {

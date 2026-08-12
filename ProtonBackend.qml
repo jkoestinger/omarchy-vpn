@@ -60,8 +60,13 @@ Item {
     return value === undefined || value === null ? fallback : value
   }
 
-  function detect() {
+  // Asked once. `force` is the user asking again, which is the only time the
+  // answer could have changed — see refreshAll() in VpnController.
+  property bool _probed: false
+
+  function detect(force) {
     if (detectProcess.running) return
+    if (_probed && force !== true) return
     detectProcess.running = true
   }
 
@@ -87,6 +92,7 @@ Item {
     _toggleKey = key
     toggleProcess.command = ["protonvpn"].concat(args)
     toggleProcess.running = true
+    pendingTimer.restart()
   }
 
   function applyConfig(raw) {
@@ -150,6 +156,22 @@ Item {
     if (_desired !== -1 && parsed.connected === (_desired === 1)) _desired = -1
   }
 
+  // A command that exits clean but does not take — the CLI accepts it and then
+  // lists the old value — would otherwise leave the switch showing the position
+  // the user asked for, marked busy, for as long as the panel is open. Optimism
+  // gets a deadline: past it, the switches go back to what the CLI actually
+  // says, which is the whole point of not storing them here.
+  Timer {
+    id: pendingTimer
+    interval: 10000
+    repeat: false
+    onTriggered: {
+      if (Object.keys(root._pendingToggles).length === 0) return
+      root._pendingToggles = ({})
+      root.lastError = "Proton VPN did not apply that setting."
+    }
+  }
+
   // The CLI reports the new state a beat after the command returns, so re-poll
   // a few times instead of waiting out the controller's refresh interval.
   Timer {
@@ -174,6 +196,7 @@ Item {
     command: ["omarchy-cmd-present", "protonvpn"]
     running: true
     onExited: function(exitCode) {
+      root._probed = true
       root.detected = exitCode === 0
       if (root.detected) root.refresh()
     }
@@ -243,6 +266,9 @@ Item {
     }
   }
 
+  // "Loaded" means asked and answered. A table this parser cannot read is a
+  // reason to say so once, not to re-fetch the list on every poll for as long
+  // as the shell runs.
   Process {
     id: countriesProcess
     running: false
@@ -252,6 +278,9 @@ Item {
       if (exitCode !== 0) return
       root.countries = Model.parseProtonCountries(String(countriesStdout.text || ""))
       root.countriesLoaded = true
+      if (root.countries.length === 0) {
+        root.lastError = "Could not read the country list. Check: protonvpn countries list"
+      }
     }
   }
 }

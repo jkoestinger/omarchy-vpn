@@ -1,0 +1,18 @@
+name: test
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+jobs:
+  model:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      # No install step: the suite is stdlib-only on purpose, so it runs the
+      # same way here as it does on a machine with the plugin checked out.
+      - run: node tests/run.js
