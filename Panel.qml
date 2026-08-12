@@ -406,10 +406,15 @@ Panel {
         vpn.toggleActive()
         return "ok"
       }
+      // A bare country code is the documented shorthand, and it is the row key
+      // that spells it the same way for every backend: the detail line does
+      // not — Mullvad's carries a city count after the code.
+      var byCode = "country:" + wanted.toUpperCase()
       var targets = vpn.active.targets
       for (var i = 0; i < targets.length; i++) {
         var candidate = targets[i]
-        if (candidate.key === wanted || candidate.detail === wanted || candidate.label === wanted) {
+        if (candidate.key === wanted || candidate.key === byCode
+            || candidate.detail === wanted || candidate.label === wanted) {
           vpn.connectVia(vpn.active, candidate)
           return "ok"
         }
@@ -418,7 +423,7 @@ Panel {
     }
     function disconnect(): string {
       if (!vpn.active) return "no backend"
-      vpn.active.disconnect()
+      vpn.disconnectActive()
       return "ok"
     }
     // A declared IPC argument is mandatory, so "connect, no target in mind"
@@ -470,7 +475,10 @@ Panel {
       // swallowing plain letters.
       onTextKey: function(t) {
         if (t === "/" && root.filterVisible) filterField.forceActiveFocus()
-        else if (t === "d" || t === "D") { if (root.backend) root.backend.disconnect() }
+        // Through the controller, for the same reason connecting is: it is the
+        // one that knows about a connect still queued behind a teardown, which
+        // is exactly what pressing this is asking to call off.
+        else if (t === "d" || t === "D") vpn.disconnectActive()
         else if (t === "r" || t === "R") { vpn.refreshAll(true); vpn.refreshPublicIp() }
         else if (t === "s" || t === "S") { if (root.switcherVisible) root.stepBackend(1) }
       }

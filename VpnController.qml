@@ -18,7 +18,9 @@ import "Model.js" as Model
 //   emptyText                        shown when targets is empty
 //   toggles                          [{ key, label, detail, value, busy }] tool settings
 //   busy, actionStatus, lastError    transient feedback
-//   detect(), refresh()              probing
+//   detect(force)                    is the tool here? probing only — a hidden
+//                                    backend gets this and nothing else
+//   refresh()                        ask the tool where it stands
 //   connectTo(target), disconnect(), toggleConnection()
 //   setToggle(key, value)            flip one of the tool's own settings
 Item {
@@ -200,11 +202,22 @@ Item {
     var backend = root.active
     if (!backend) return
     if (backend.connected) {
-      clearNotice()
-      backend.disconnect()
+      disconnectActive()
       return
     }
     runExclusive(backend, function() { backend.toggleConnection() })
+  }
+
+  // Every disconnect goes through here rather than straight to the backend,
+  // because a connect still queued behind somebody else's teardown is part of
+  // the request being withdrawn. Left in place it lands seconds later and
+  // reconnects the tunnel the user just asked to bring down.
+  function disconnectActive() {
+    var backend = root.active
+    if (!backend) return
+    cancelPending()
+    clearNotice()
+    backend.disconnect()
   }
 
   // A warning about the connect that is about to run, kept here rather than on
@@ -230,11 +243,22 @@ Item {
     noticeTimer.stop()
   }
 
+  function cancelPending() {
+    exclusiveWait.running = false
+    exclusiveWait.ticks = 0
+    root._pendingAction = null
+    root._pendingBackend = null
+  }
+
   function runExclusive(backend, action) {
     clearNotice()
 
     var others = otherConnected(backend)
     if (others.length === 0) {
+      // Nothing to wait for — but something queued behind an earlier teardown
+      // may still be waiting, and it is the request this one replaces. Running
+      // both lands on the first target after the second one was asked for.
+      cancelPending()
       action()
       return
     }
@@ -295,18 +319,23 @@ Item {
 
   // A hidden tool is still probed — the settings view has to list it for you to
   // switch it back on — but never polled: not asking is the point of hiding it.
+  // The two calls are kept separate here rather than chained inside a backend,
+  // because a `detect()` that falls through to a refresh once probed would poll
+  // a hidden tool forever through the detect branch alone.
   //
   // Binaries do not come and go while the shell runs, so a tool that answered
   // "not installed" is asked once and then left alone; the poll would otherwise
   // spawn a probe per missing tool every interval, forever, to re-answer a
   // question whose answer never changed. `force` is the user asking — opening
   // the panel, pressing r, middle-clicking the icon — which is exactly when
-  // something might have been installed since.
+  // something might have been installed since, and the one time a hidden tool
+  // is looked at again so the settings view is not listing a stale machine.
   function refreshAll(force) {
     var recheck = force === true
     for (var i = 0; i < backends.length; i++) {
-      if (!backends[i].detected) backends[i].detect(recheck)
-      else if (!isHidden(backends[i].backendId)) backends[i].refresh()
+      backends[i].detect(recheck)
+      if (isHidden(backends[i].backendId)) continue
+      backends[i].refresh()
     }
   }
 

@@ -70,16 +70,15 @@ Item {
     return value === undefined || value === null ? fallback : value
   }
 
-  // `detected` now depends on the profile list, so the controller keeps calling
-  // detect() on a machine that has the tools and no profiles. The binaries do
-  // not come and go; once probed, this is a plain refresh rather than three
-  // more processes every poll.
+  // Probing only. `detected` depends on the profile list, so the controller
+  // keeps calling this on a machine that has the tools and no profiles — but
+  // the discovery that would settle that question belongs in refresh(), which
+  // the controller skips for a hidden tool. Falling through to it here would
+  // poll a tool the user switched off. The binaries do not come and go, so once
+  // probed this is nothing rather than three more processes every poll.
   function detect(force) {
     if (nmcliProbe.running || openvpnProbe.running || wireguardProbe.running) return
-    if (_probed && force !== true) {
-      refresh()
-      return
-    }
+    if (_probed && force !== true) return
     _probesDone = 0
     nmcliProbe.running = true
     openvpnProbe.running = true

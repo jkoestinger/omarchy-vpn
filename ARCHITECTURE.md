@@ -47,9 +47,14 @@ duck-types, so a backend that omits something simply renders as blank.
 
 **Verbs**
 
-`detect()`, `refresh()`, `connectTo(target)`, `disconnect()`,
+`detect(force)`, `refresh()`, `connectTo(target)`, `disconnect()`,
 `toggleConnection()`, and `setToggle(key, value)` for a backend that offers
 `toggles`.
+
+`detect(force)` probes and nothing else — it must not fall through to a
+`refresh()`, because a hidden backend is given `detect()` alone and would
+otherwise keep polling a tool the user switched off. `refresh()` guards itself,
+so the controller can call it unconditionally.
 
 `toggleConnection()` is the backend's own idea of a default connection — Proton
 picks the fastest server; Mullvad reuses its stored relay constraint;
@@ -81,6 +86,15 @@ contract.
 connected backend, wait for them to report down (700ms polls, ~10s cap, then
 proceed anyway so a stuck teardown cannot swallow the user's connect), and only
 then bring the new tunnel up.
+
+Every *disconnect* goes through `disconnectActive()` for the mirror-image
+reason: the connect waiting on that teardown is part of what is being withdrawn,
+and a queued action nobody cancelled fires seconds later and reconnects the
+tunnel the user just asked to bring down. Picking a second target cancels the
+first for the same reason — nobody clicks two countries wanting both — which
+matters most when the teardown finished between the click and the next poll, so
+the second connect takes the "nothing to wait for" path and would otherwise
+leave the first one queued behind it.
 
 **Optimistic state.** Both backends keep a `_desired` field: `-1` follows
 reality, `0`/`1` overrides it while a command is in flight. That is what makes
@@ -193,8 +207,8 @@ WireGuard ones), since NetworkManager lists an OpenVPN profile whether or not
 anything can run it. With no eligible profile the backend disappears, and with
 it the chip, the hero, and the empty list they led to; the import instructions
 move to the panel's `setupHint` line so nothing is lost. Because `detected` now
-follows the profile list, `detect()` stays callable every poll: the binary
-probes run once, and after that it is a plain `refresh()`.
+follows the profile list, the question is settled by `refresh()` rather than by
+`detect()`, which runs its three binary probes once and is a no-op after that.
 
 **FILENAME is what keeps other tools' tunnels out.** When something brings up a
 WireGuard interface itself — Mullvad's `wg0-mullvad` — NetworkManager adopts the
@@ -256,8 +270,14 @@ it:
 
 ```bash
 node tests/run.js
-qmllint *.qml          # one file per invocation; a batch exits 255 regardless
+(cd .. && qmllint -I /usr/share/omarchy/shell jkoestinger.vpn/Panel.qml)
 ```
+
+One file per invocation, and never from inside the plugin directory. qmllint
+treats the directory it is pointed at as an implicit import, which makes
+`Panel.qml` — a `Panel` deriving from `qs.Ui`'s `Panel` — resolve to itself and
+crash with exit 255 and no message. A batch invocation adds the same directory
+for the same reason. Neither is a defect in the file being checked.
 
 No framework and no `package.json` — a suite that needed installing would not
 get run, and the plugin is not built. `tests/run.js` evaluates `Model.js` in the
