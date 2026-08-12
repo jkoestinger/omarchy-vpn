@@ -30,8 +30,12 @@ Item {
   property string lastError: ""
 
   // The stored "block traffic while disconnected" setting, which the status
-  // payload only reports while the tunnel is already down.
-  readonly property bool lockdownMode: daemonSettings.lockdown
+  // payload only reports while the tunnel is already down. False also covers
+  // "the daemon never answered for it" — see parseMullvadSettings — so this
+  // drives a warning and never a switch position.
+  readonly property bool lockdownMode: daemonSettings.seen !== undefined
+    && daemonSettings.seen.lockdown === true
+    && daemonSettings.lockdown
 
   // Switches the panel draws under the detail rows. Values are whatever the
   // daemon last reported; the widget stores none of them.
@@ -67,8 +71,13 @@ Item {
     return value === undefined || value === null ? fallback : value
   }
 
-  function detect() {
+  // Asked once. `force` is the user asking again, which is the only time the
+  // answer could have changed — see refreshAll() in VpnController.
+  property bool _probed: false
+
+  function detect(force) {
     if (detectProcess.running) return
+    if (_probed && force !== true) return
     detectProcess.running = true
   }
 
@@ -94,18 +103,23 @@ Item {
     _toggleKey = key
     toggleProcess.command = ["mullvad"].concat(args)
     toggleProcess.running = true
+    pendingTimer.restart()
   }
 
   function applySettings(raw) {
     var parsed = Model.parseMullvadSettings(raw)
+    // A read that answered nothing is not a report that everything is off.
+    // Keep whatever the daemon last actually said.
+    if (!parsed.loaded) return
     root.daemonSettings = parsed
 
     // Drop the optimistic value only for the switches the daemon now agrees
-    // with, so a poll landing mid-flight cannot flick the others back.
+    // with, so a poll landing mid-flight cannot flick the others back. A
+    // setting the daemon did not answer for agrees with nothing.
     var pending = {}
     var changed = false
     for (var key in _pendingToggles) {
-      if (parsed[key] === _pendingToggles[key]) changed = true
+      if (parsed.seen[key] === true && parsed[key] === _pendingToggles[key]) changed = true
       else pending[key] = _pendingToggles[key]
     }
     if (changed) _pendingToggles = pending
@@ -187,6 +201,22 @@ Item {
     return "The Mullvad daemon is not responding. Start it with: sudo systemctl start mullvad-daemon"
   }
 
+  // A command that exits clean but does not take — the daemon accepts it and
+  // then reports the old value — would otherwise leave the switch showing the
+  // position the user asked for, marked busy, for as long as the panel is open.
+  // Optimism gets a deadline: past it, the switches go back to what the daemon
+  // actually says, which is the whole point of not storing them here.
+  Timer {
+    id: pendingTimer
+    interval: 10000
+    repeat: false
+    onTriggered: {
+      if (Object.keys(root._pendingToggles).length === 0) return
+      root._pendingToggles = ({})
+      root.lastError = "Mullvad did not apply that setting."
+    }
+  }
+
   // The daemon reports the new state a beat after the command returns, and a
   // WireGuard handshake over a slow link can take a few seconds more than
   // Proton's CLI does, so poll a little longer than that backend.
@@ -228,6 +258,7 @@ Item {
     command: ["omarchy-cmd-present", "mullvad"]
     running: true
     onExited: function(exitCode) {
+      root._probed = true
       root.detected = exitCode === 0
       if (root.detected) root.refresh()
     }
@@ -257,13 +288,16 @@ Item {
 
   // Three subcommands, one process. Each answer names itself, so the parser
   // does not care about the order they come back in.
+  //
+  // The exit code belongs to the last subcommand alone and says nothing about
+  // the other two, so it is not consulted: the parser reads whichever answers
+  // arrived and reports the rest as unanswered rather than as off.
   Process {
     id: settingsProcess
     running: false
     command: ["bash", "-c", "mullvad auto-connect get; mullvad lockdown-mode get; mullvad lan get"]
     stdout: StdioCollector { id: settingsStdout; waitForEnd: true }
     onExited: function(exitCode) {
-      if (exitCode !== 0) return
       root.applySettings(String(settingsStdout.text || ""))
     }
   }
@@ -286,6 +320,10 @@ Item {
     }
   }
 
+  // `relay list` is the largest thing this CLI prints, so "loaded" has to mean
+  // "asked and answered", not "answered with something". Keying it off the
+  // parsed count made a format change re-fetch the whole list on every poll,
+  // forever, while the panel showed no countries and no reason why.
   Process {
     id: relaysProcess
     running: false
@@ -294,7 +332,10 @@ Item {
     onExited: function(exitCode) {
       if (exitCode !== 0) return
       root.relays = Model.parseMullvadRelays(String(relaysStdout.text || ""))
-      root.relaysLoaded = root.relays.length > 0
+      root.relaysLoaded = true
+      if (root.relays.length === 0) {
+        root.lastError = "Could not read the relay list. Check: mullvad relay list"
+      }
     }
   }
 

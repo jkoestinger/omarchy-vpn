@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "jkoestinger.vpn",
   "name": "VPN",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Justin",
   "license": "MIT",
   "description": "VPN status and switching in the Omarchy bar, across whichever VPN tools are installed.",
@@ -21,7 +21,8 @@
     "defaults": {
       "refreshIntervalSec": 15,
       "preferredBackend": "Auto",
-      "favoriteCountries": "CH,NL,US"
+      "favoriteCountries": "CH,NL,US",
+      "hiddenBackends": ""
     },
     "schema": [
       {
@@ -46,6 +47,13 @@
         "type": "string",
         "label": "Favorite countries (comma separated)",
         "defaultValue": "CH,NL,US"
+      },
+      {
+        "key": "hiddenBackends",
+        "type": "string",
+        "label": "Hidden VPN tools (comma separated)",
+        "defaultValue": "",
+        "description": "Tools the widget ignores entirely: proton, mullvad, networkmanager. Also editable from the gear inside the panel."
       }
     ]
   }

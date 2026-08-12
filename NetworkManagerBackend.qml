@@ -19,7 +19,6 @@ Item {
   readonly property bool supportsFilter: false
   readonly property string filterPlaceholder: ""
 
-  property bool detected: false
   property var profiles: []
   property string actionStatus: ""
   property string lastError: ""
@@ -29,6 +28,18 @@ Item {
   // gets the chip, and a profile of a kind you cannot run simply never appears.
   property bool _openvpnPresent: false
   property bool _wireguardPresent: false
+  property int _probesDone: 0
+  property bool _probed: false
+
+  readonly property bool _toolsPresent: _nmcliPresent && (_openvpnPresent || _wireguardPresent)
+  // Having the tools is not having anything to connect to. NetworkManager is
+  // the one backend whose list can be legitimately empty on a working install,
+  // and a chip leading to an empty list is a chip worth not drawing.
+  readonly property bool detected: _toolsPresent && profiles.length > 0
+
+  // Said instead of the panel's "install a VPN tool" line, which is unhelpful
+  // advice for someone who has the tools and only lacks a profile.
+  readonly property string setupHint: _toolsPresent && profiles.length === 0 ? emptyText : ""
   property int _desired: -1
   property var _pendingTarget: null
   // Connecting can take two commands — down the profile that is up, then up the
@@ -59,20 +70,33 @@ Item {
     return value === undefined || value === null ? fallback : value
   }
 
-  function detect() {
+  // Probing only. `detected` depends on the profile list, so the controller
+  // keeps calling this on a machine that has the tools and no profiles — but
+  // the discovery that would settle that question belongs in refresh(), which
+  // the controller skips for a hidden tool. Falling through to it here would
+  // poll a tool the user switched off. The binaries do not come and go, so once
+  // probed this is nothing rather than three more processes every poll.
+  function detect(force) {
     if (nmcliProbe.running || openvpnProbe.running || wireguardProbe.running) return
+    if (_probed && force !== true) return
+    _probesDone = 0
     nmcliProbe.running = true
     openvpnProbe.running = true
     wireguardProbe.running = true
   }
 
-  function _updateDetected() {
-    root.detected = _nmcliPresent && (_openvpnPresent || _wireguardPresent)
-    if (root.detected) root.refresh()
+  function _probeFinished() {
+    root._probesDone += 1
+    if (root._probesDone < 3) return
+    root._probed = true
+    if (root._toolsPresent) root.refresh()
   }
 
+  // The two passes share `listProcess.pending`, so a refresh landing while the
+  // second one is still out would hand it a list the details it is holding do
+  // not describe. One discovery at a time.
   function refresh() {
-    if (!detected || listProcess.running) return
+    if (!_toolsPresent || listProcess.running || typesProcess.running) return
     listProcess.running = true
   }
 
@@ -150,9 +174,20 @@ Item {
     actionStatusTimer.restart()
   }
 
+  // A profile is only eligible if the tool that carries its kind is installed:
+  // NetworkManager lists an OpenVPN profile whether or not anything can run it.
+  function runnable(profile) {
+    return profile.kind === "wireguard" ? _wireguardPresent : _openvpnPresent
+  }
+
   function applyProfiles(list) {
-    root.profiles = list
-    if (_desired !== -1 && (Model.activeNmProfile(list) !== null) === (_desired === 1)) _desired = -1
+    var eligible = []
+    for (var i = 0; i < list.length; i++) {
+      if (runnable(list[i])) eligible.push(list[i])
+    }
+
+    root.profiles = eligible
+    if (_desired !== -1 && (Model.activeNmProfile(eligible) !== null) === (_desired === 1)) _desired = -1
   }
 
   Timer {
@@ -195,7 +230,7 @@ Item {
     running: true
     onExited: function(exitCode) {
       root._nmcliPresent = exitCode === 0
-      root._updateDetected()
+      root._probeFinished()
     }
   }
 
@@ -205,7 +240,7 @@ Item {
     running: true
     onExited: function(exitCode) {
       root._openvpnPresent = exitCode === 0
-      root._updateDetected()
+      root._probeFinished()
     }
   }
 
@@ -218,8 +253,31 @@ Item {
     running: true
     onExited: function(exitCode) {
       root._wireguardPresent = exitCode === 0
-      root._updateDetected()
+      root._probeFinished()
     }
+  }
+
+  // nmcli rejects the whole call when asked for a field it does not know, so an
+  // nmcli too old for FILENAME does not return rows without it — it returns
+  // nothing at all, and the backend would silently never appear. The first
+  // refusal drops the field and the list is fetched again; volatile-connection
+  // filtering is what is lost, which is a stray row rather than no backend.
+  property bool _filenameField: true
+  readonly property var _listCommand: _filenameField
+    ? ["nmcli", "-t", "-f", "NAME,UUID,TYPE,ACTIVE,FILENAME", "connection", "show"]
+    : ["nmcli", "-t", "-f", "NAME,UUID,TYPE,ACTIVE", "connection", "show"]
+
+  function unknownField(text) {
+    return /not among|unknown field|invalid field|allowed fields/i.test(String(text || ""))
+  }
+
+  // Retrying from inside onExited would re-enter the process that is still
+  // finishing, the same reason the connect chain hops through the event loop.
+  Timer {
+    id: listRetry
+    interval: 0
+    repeat: false
+    onTriggered: root.refresh()
   }
 
   // Every tunnel-shaped connection: `vpn` whichever plugin backs it, plus
@@ -228,13 +286,19 @@ Item {
   Process {
     id: listProcess
     running: false
-    command: ["nmcli", "-t", "-f", "NAME,UUID,TYPE,ACTIVE,FILENAME", "connection", "show"]
+    command: root._listCommand
     stdout: StdioCollector { id: listStdout; waitForEnd: true }
     stderr: StdioCollector { id: listStderr; waitForEnd: true }
     property var pending: []
     onExited: function(exitCode) {
       if (exitCode !== 0) {
-        root.lastError = Model.elide(String(listStderr.text || "") || "Could not list NetworkManager connections", 140)
+        var failure = String(listStderr.text || "")
+        if (root._filenameField && root.unknownField(failure)) {
+          root._filenameField = false
+          listRetry.restart()
+          return
+        }
+        root.lastError = Model.elide(failure || "Could not list NetworkManager connections", 140)
         return
       }
 
@@ -272,9 +336,16 @@ Item {
     running: false
     command: []
     stdout: StdioCollector { id: typesStdout; waitForEnd: true }
+    stderr: StdioCollector { id: typesStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      // One profile deleted between the two passes fails the whole call. That
+      // is a reason to keep the list from last time, not to declare the machine
+      // has no tunnels: emptying it here drops `detected`, takes the chip away
+      // while a tunnel is up, and with it the only way to bring that tunnel
+      // down — disconnect() refuses to run undetected.
       if (exitCode !== 0) {
-        root.applyProfiles([])
+        root.lastError = Model.elide(
+          String(typesStderr.text || "") || "Could not read NetworkManager profile details", 140)
         return
       }
 

@@ -35,7 +35,7 @@ duck-types, so a backend that omits something simply renders as blank.
 
 | Property | Meaning |
 |----------|---------|
-| `detected` | Tool is installed and usable. Everything else is ignored until this is true |
+| `detected` | Tool is installed and has something to offer. Everything else is ignored until this is true |
 | `connected` | A tunnel is up |
 | `summary` | One line under the hero title |
 | `details` | `[{ label, value }]` rows shown while connected |
@@ -47,9 +47,14 @@ duck-types, so a backend that omits something simply renders as blank.
 
 **Verbs**
 
-`detect()`, `refresh()`, `connectTo(target)`, `disconnect()`,
+`detect(force)`, `refresh()`, `connectTo(target)`, `disconnect()`,
 `toggleConnection()`, and `setToggle(key, value)` for a backend that offers
 `toggles`.
+
+`detect(force)` probes and nothing else — it must not fall through to a
+`refresh()`, because a hidden backend is given `detect()` alone and would
+otherwise keep polling a tool the user switched off. `refresh()` guards itself,
+so the controller can call it unconditionally.
 
 `toggleConnection()` is the backend's own idea of a default connection — Proton
 picks the fastest server; Mullvad reuses its stored relay constraint;
@@ -59,6 +64,11 @@ asks the user to pick.
 A backend may also expose `lockdownMode`, meaning "this tool blocks all traffic
 while it is disconnected". The controller warns about it before tearing that
 backend down for another one.
+
+It may also expose `setupHint`: one line explaining why it is not `detected`
+and what would change that. The panel shows the first non-empty hint in place
+of its own "install a VPN tool" line, which is the wrong advice for a tool that
+is installed and merely has nothing to connect to yet.
 
 ## Adding a backend
 
@@ -77,13 +87,25 @@ connected backend, wait for them to report down (700ms polls, ~10s cap, then
 proceed anyway so a stuck teardown cannot swallow the user's connect), and only
 then bring the new tunnel up.
 
+Every *disconnect* goes through `disconnectActive()` for the mirror-image
+reason: the connect waiting on that teardown is part of what is being withdrawn,
+and a queued action nobody cancelled fires seconds later and reconnects the
+tunnel the user just asked to bring down. Picking a second target cancels the
+first for the same reason — nobody clicks two countries wanting both — which
+matters most when the teardown finished between the click and the next poll, so
+the second connect takes the "nothing to wait for" path and would otherwise
+leave the first one queued behind it.
+
 **Optimistic state.** Both backends keep a `_desired` field: `-1` follows
 reality, `0`/`1` overrides it while a command is in flight. That is what makes
 the switch flip the instant it is clicked instead of waiting a poll cycle.
 Reality reasserts itself once the tool agrees, or after the settle timer gives
 up.
 
-**Public IP.** Fetched with `curl checkip.amazonaws.com`, never polled. The
+**Public IP.** Fetched with `curl https://checkip.amazonaws.com`, never polled.
+The scheme is explicit — over plain HTTP anyone on the path could forge the
+address the panel presents as proof the tunnel works — and the response is only
+believed if it parses as an address literal. The
 trigger is `connectionKey` — a string built from the connected backend's id and
 summary — so a connect, a disconnect, or a server switch all invalidate it. A
 2s delay lets routes settle first, since asking too early returns the old
@@ -111,6 +133,25 @@ the hero exactly as it was — no empty drawer, no dead handle. The open/closed
 state lives on the panel, so it survives a close and reopen but not a shell
 restart, and folding the drawer while the cursor is inside it moves the cursor
 back to the hero rather than stranding it.
+
+**Two kinds of settings, two places.** The drawer above holds the *tool's*
+settings, which the widget only reflects. The gear in the header holds the
+*widget's* own, which it owns and must persist — currently one switch per
+detected tool. It writes through `bar.shell.updateEntryInline(moduleName,
+settings)` into this widget's entry in `~/.config/omarchy/shell.json`, the same
+file and entry Omarchy's settings dialog edits, so the two never disagree.
+`settings` arrives holding only the inline overrides, so writing it back cannot
+bake today's defaults into the config.
+
+Hidden tools are dropped from `availableBackends`: no chip, no polling, no
+weight in the bar icon, and exclusivity never tears them down. They are still
+probed, since the settings view has to list a hidden tool for you to switch it
+back on, and `detectedBackends` — everything present, hidden or not — is what
+that view renders. Hiding is a view, not a drawer: it replaces the body, because
+nothing in the connect list means anything while you are deciding which tools
+the widget should know about. It resets on close, unlike the tool drawer, and
+the gear stays reachable with the master switch gone so a widget with everything
+hidden is not a dead end.
 
 While a switch is in flight it shows the position the user just asked for, with
 `busy` set. The optimistic value is dropped only for the keys the tool has since
@@ -157,6 +198,17 @@ NetworkManager keeps it outside the secrets store, so `nmcli --ask` never
 prompts for it — a profile without one authenticates as the empty user and the
 server answers `AUTH_FAILED`. The backend detects that case and reports the fix
 instead of opening a terminal that cannot succeed.
+
+**Eligibility, not just installation.** NetworkManager ships on every desktop,
+so "nmcli is here" says nothing about whether this machine has a tunnel to
+offer. It is `detected` only while at least one eligible profile exists — one
+whose kind matches an installed tool (`openvpn` for OpenVPN profiles, `wg` for
+WireGuard ones), since NetworkManager lists an OpenVPN profile whether or not
+anything can run it. With no eligible profile the backend disappears, and with
+it the chip, the hero, and the empty list they led to; the import instructions
+move to the panel's `setupHint` line so nothing is lost. Because `detected` now
+follows the profile list, the question is settled by `refresh()` rather than by
+`detect()`, which runs its three binary probes once and is a no-op after that.
 
 **FILENAME is what keeps other tools' tunnels out.** When something brings up a
 WireGuard interface itself — Mullvad's `wg0-mullvad` — NetworkManager adopts the
@@ -209,3 +261,30 @@ registered for target …` appears once per extra monitor. Every first-party
 widget logs the same thing; it is not a defect.
 
 Check a manifest change with `omarchy plugin validate .` before committing.
+
+## Tests
+
+`Model.js` is where every assumption about how three CLIs format their output
+lives, and it is the one file that runs without a QML engine. The suite covers
+it:
+
+```bash
+node tests/run.js
+(cd .. && qmllint -I /usr/share/omarchy/shell jkoestinger.vpn/Panel.qml)
+```
+
+One file per invocation, and never from inside the plugin directory. qmllint
+treats the directory it is pointed at as an implicit import, which makes
+`Panel.qml` — a `Panel` deriving from `qs.Ui`'s `Panel` — resolve to itself and
+crash with exit 255 and no message. A batch invocation adds the same directory
+for the same reason. Neither is a defect in the file being checked.
+
+No framework and no `package.json` — a suite that needed installing would not
+get run, and the plugin is not built. `tests/run.js` evaluates `Model.js` in the
+node realm and collects the names it declares, since a `.pragma library` has no
+exports. CI runs the same command on push and pull request.
+
+The QML halves are not covered: they are `Process` plumbing and bindings, and
+the interesting logic was pushed into `Model.js` precisely so it could be
+tested. When a bug turns out to live in a parser, the fix belongs there with a
+case beside it.

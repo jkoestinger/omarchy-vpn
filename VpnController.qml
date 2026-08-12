@@ -10,14 +10,17 @@ import "Model.js" as Model
 //   backendId, label, glyph          identity for the switcher chips
 //   supportsFilter, filterPlaceholder whether the panel shows its filter field
 //   filter                           panel writes the current filter text here
-//   detected                         tool is installed and usable
+//   detected                         tool is installed and has something to offer
+//   setupHint                        optional: what to do about being undetected
 //   connected, summary               headline state
 //   details                          [{ label, value }] shown while connected
 //   targets                          [{ key, label, detail, glyph, args }]
 //   emptyText                        shown when targets is empty
 //   toggles                          [{ key, label, detail, value, busy }] tool settings
 //   busy, actionStatus, lastError    transient feedback
-//   detect(), refresh()              probing
+//   detect(force)                    is the tool here? probing only — a hidden
+//                                    backend gets this and nothing else
+//   refresh()                        ask the tool where it stands
 //   connectTo(target), disconnect(), toggleConnection()
 //   setToggle(key, value)            flip one of the tool's own settings
 Item {
@@ -30,8 +33,19 @@ Item {
   property string selectedId: ""
 
   readonly property var backends: [proton, mullvad, networkManager]
-  readonly property var availableBackends: backends.filter(function(backend) { return backend.detected })
+  // Tools this machine has. Hiding one is a statement about the widget, not
+  // about the machine, so the settings view lists these — including the hidden
+  // ones, which would otherwise be unreachable once they were switched off.
+  readonly property var detectedBackends: backends.filter(function(backend) { return backend.detected })
+  readonly property var hiddenBackendIds: Model.parseBackendIds(setting("hiddenBackends", ""))
+  readonly property var availableBackends: detectedBackends.filter(function(backend) {
+    return !root.isHidden(backend.backendId)
+  })
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 15, 5, 600)
+
+  function isHidden(backendId) {
+    return hiddenBackendIds.indexOf(String(backendId)) !== -1
+  }
 
   readonly property var active: {
     var available = availableBackends
@@ -68,7 +82,9 @@ Item {
   }
 
   readonly property string barSummary: {
-    if (!anyDetected) return "No VPN tool installed"
+    if (!anyDetected) {
+      return detectedBackends.length > 0 ? "Every VPN tool is hidden" : "No VPN tool installed"
+    }
     var backend = connectedBackend
     if (!backend) return "Not connected"
     return backend.label + " · " + backend.summary
@@ -77,6 +93,18 @@ Item {
   readonly property var switcherOptions: availableBackends.map(function(backend) {
     return { value: backend.backendId, label: backend.label }
   })
+
+  // An installed tool with nothing to show hides itself, so the panel would
+  // otherwise tell you to install what you already have. Optional: a backend
+  // without the property simply has nothing to say.
+  readonly property string setupHint: {
+    for (var i = 0; i < backends.length; i++) {
+      if (isHidden(backends[i].backendId)) continue
+      var hint = backends[i].setupHint
+      if (hint !== undefined && String(hint) !== "") return String(hint)
+    }
+    return ""
+  }
 
   // ------------------------------------------------------------- public IP
 
@@ -114,14 +142,19 @@ Item {
     onTriggered: root.refreshPublicIp()
   }
 
+  // Over HTTPS, and not by accident: a bare hostname would leave curl on plain
+  // HTTP, where anyone between this machine and the exit — the very party a
+  // VPN is run against — could hand back any address they liked and have the
+  // panel present it as proof the tunnel works. `--fail` keeps an error body
+  // out of the answer; the parser rejects anything that is not an address.
   Process {
     id: ipProcess
     running: false
-    command: ["curl", "--silent", "--max-time", "6", "checkip.amazonaws.com"]
+    command: ["curl", "--silent", "--fail", "--max-time", "6", "https://checkip.amazonaws.com"]
     stdout: StdioCollector { id: ipStdout; waitForEnd: true }
     onExited: function(exitCode) {
       root.ipFetching = false
-      var address = String(ipStdout.text || "").trim()
+      var address = Model.parsePublicIp(String(ipStdout.text || ""))
       if (exitCode === 0 && address !== "") {
         root.publicIp = address
         root.ipFailed = false
@@ -169,15 +202,63 @@ Item {
     var backend = root.active
     if (!backend) return
     if (backend.connected) {
-      backend.disconnect()
+      disconnectActive()
       return
     }
     runExclusive(backend, function() { backend.toggleConnection() })
   }
 
+  // Every disconnect goes through here rather than straight to the backend,
+  // because a connect still queued behind somebody else's teardown is part of
+  // the request being withdrawn. Left in place it lands seconds later and
+  // reconnects the tunnel the user just asked to bring down.
+  function disconnectActive() {
+    var backend = root.active
+    if (!backend) return
+    cancelPending()
+    clearNotice()
+    backend.disconnect()
+  }
+
+  // A warning about the connect that is about to run, kept here rather than on
+  // the backend's lastError — connectTo() clears that as its first act, so the
+  // action being warned about would wipe the warning on its way out. Expires on
+  // its own, since it describes one attempt and not a standing condition.
+  property string notice: ""
+
+  Timer {
+    id: noticeTimer
+    interval: 12000
+    repeat: false
+    onTriggered: root.notice = ""
+  }
+
+  function setNotice(text) {
+    root.notice = text
+    noticeTimer.restart()
+  }
+
+  function clearNotice() {
+    root.notice = ""
+    noticeTimer.stop()
+  }
+
+  function cancelPending() {
+    exclusiveWait.running = false
+    exclusiveWait.ticks = 0
+    root._pendingAction = null
+    root._pendingBackend = null
+  }
+
   function runExclusive(backend, action) {
+    clearNotice()
+
     var others = otherConnected(backend)
     if (others.length === 0) {
+      // Nothing to wait for — but something queued behind an earlier teardown
+      // may still be waiting, and it is the request this one replaces. Running
+      // both lands on the first target after the second one was asked for.
+      cancelPending()
       action()
       return
     }
@@ -187,14 +268,19 @@ Item {
       // down, which is exactly when the incoming connect needs the network.
       // Say so up front rather than let it fail as a timeout.
       if (others[i].lockdownMode === true) {
-        backend.lastError = others[i].label + " blocks all traffic while it is disconnected, "
-          + "so connecting will not get through. Turn it off with: mullvad lockdown-mode set off"
+        setNotice(others[i].label + " blocks all traffic while it is disconnected, "
+          + "so connecting will not get through. Turn it off with: mullvad lockdown-mode set off")
       }
       others[i].disconnect()
     }
+    // Picking a second target while the first is still waiting means the second
+    // one: nobody clicks two countries wanting both. The deadline stays where
+    // the first click put it, though — resetting it on every click would let an
+    // impatient user push the bail-out back indefinitely and leave the panel
+    // waiting on a teardown that is never going to land.
+    if (!exclusiveWait.running) exclusiveWait.ticks = 0
     root._pendingAction = action
     root._pendingBackend = backend
-    exclusiveWait.ticks = 0
     exclusiveWait.restart()
   }
 
@@ -231,10 +317,25 @@ Item {
     }
   }
 
-  function refreshAll() {
+  // A hidden tool is still probed — the settings view has to list it for you to
+  // switch it back on — but never polled: not asking is the point of hiding it.
+  // The two calls are kept separate here rather than chained inside a backend,
+  // because a `detect()` that falls through to a refresh once probed would poll
+  // a hidden tool forever through the detect branch alone.
+  //
+  // Binaries do not come and go while the shell runs, so a tool that answered
+  // "not installed" is asked once and then left alone; the poll would otherwise
+  // spawn a probe per missing tool every interval, forever, to re-answer a
+  // question whose answer never changed. `force` is the user asking — opening
+  // the panel, pressing r, middle-clicking the icon — which is exactly when
+  // something might have been installed since, and the one time a hidden tool
+  // is looked at again so the settings view is not listing a stale machine.
+  function refreshAll(force) {
+    var recheck = force === true
     for (var i = 0; i < backends.length; i++) {
-      if (backends[i].detected) backends[i].refresh()
-      else backends[i].detect()
+      backends[i].detect(recheck)
+      if (isHidden(backends[i].backendId)) continue
+      backends[i].refresh()
     }
   }
 
