@@ -10,7 +10,8 @@ import "Model.js" as Model
 //   backendId, label, glyph          identity for the switcher chips
 //   supportsFilter, filterPlaceholder whether the panel shows its filter field
 //   filter                           panel writes the current filter text here
-//   detected                         tool is installed and usable
+//   detected                         tool is installed and has something to offer
+//   setupHint                        optional: what to do about being undetected
 //   connected, summary               headline state
 //   details                          [{ label, value }] shown while connected
 //   targets                          [{ key, label, detail, glyph, args }]
@@ -30,8 +31,19 @@ Item {
   property string selectedId: ""
 
   readonly property var backends: [proton, mullvad, networkManager]
-  readonly property var availableBackends: backends.filter(function(backend) { return backend.detected })
+  // Tools this machine has. Hiding one is a statement about the widget, not
+  // about the machine, so the settings view lists these — including the hidden
+  // ones, which would otherwise be unreachable once they were switched off.
+  readonly property var detectedBackends: backends.filter(function(backend) { return backend.detected })
+  readonly property var hiddenBackendIds: Model.parseBackendIds(setting("hiddenBackends", ""))
+  readonly property var availableBackends: detectedBackends.filter(function(backend) {
+    return !root.isHidden(backend.backendId)
+  })
   readonly property int refreshIntervalSec: intSetting("refreshIntervalSec", 15, 5, 600)
+
+  function isHidden(backendId) {
+    return hiddenBackendIds.indexOf(String(backendId)) !== -1
+  }
 
   readonly property var active: {
     var available = availableBackends
@@ -68,7 +80,9 @@ Item {
   }
 
   readonly property string barSummary: {
-    if (!anyDetected) return "No VPN tool installed"
+    if (!anyDetected) {
+      return detectedBackends.length > 0 ? "Every VPN tool is hidden" : "No VPN tool installed"
+    }
     var backend = connectedBackend
     if (!backend) return "Not connected"
     return backend.label + " · " + backend.summary
@@ -77,6 +91,18 @@ Item {
   readonly property var switcherOptions: availableBackends.map(function(backend) {
     return { value: backend.backendId, label: backend.label }
   })
+
+  // An installed tool with nothing to show hides itself, so the panel would
+  // otherwise tell you to install what you already have. Optional: a backend
+  // without the property simply has nothing to say.
+  readonly property string setupHint: {
+    for (var i = 0; i < backends.length; i++) {
+      if (isHidden(backends[i].backendId)) continue
+      var hint = backends[i].setupHint
+      if (hint !== undefined && String(hint) !== "") return String(hint)
+    }
+    return ""
+  }
 
   // ------------------------------------------------------------- public IP
 
@@ -231,10 +257,12 @@ Item {
     }
   }
 
+  // A hidden tool is still probed — the settings view has to list it for you to
+  // switch it back on — but never polled: not asking is the point of hiding it.
   function refreshAll() {
     for (var i = 0; i < backends.length; i++) {
-      if (backends[i].detected) backends[i].refresh()
-      else backends[i].detect()
+      if (!backends[i].detected) backends[i].detect()
+      else if (!isHidden(backends[i].backendId)) backends[i].refresh()
     }
   }
 

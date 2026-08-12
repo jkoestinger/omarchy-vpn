@@ -21,7 +21,8 @@
     "defaults": {
       "refreshIntervalSec": 15,
       "preferredBackend": "Auto",
-      "favoriteCountries": "CH,NL,US"
+      "favoriteCountries": "CH,NL,US",
+      "hiddenBackends": ""
     },
     "schema": [
       {
@@ -46,6 +47,13 @@
         "type": "string",
         "label": "Favorite countries (comma separated)",
         "defaultValue": "CH,NL,US"
+      },
+      {
+        "key": "hiddenBackends",
+        "type": "string",
+        "label": "Hidden VPN tools (comma separated)",
+        "defaultValue": "",
+        "description": "Tools the widget ignores entirely: proton, mullvad, networkmanager. Also editable from the gear inside the panel."
       }
     ]
   }

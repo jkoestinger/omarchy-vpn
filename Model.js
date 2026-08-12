@@ -11,6 +11,7 @@ var GLYPH_SWAP = String.fromCodePoint(0xF04E1)
 var GLYPH_SHIELD = String.fromCodePoint(0xF0498)
 var GLYPH_CHEVRON_DOWN = String.fromCodePoint(0xF0140)
 var GLYPH_CHEVRON_UP = String.fromCodePoint(0xF0143)
+var GLYPH_COG = String.fromCodePoint(0xF0493)
 
 // ----------------------------------------------------------------- shared
 
@@ -37,6 +38,36 @@ function applyPendingToggles(toggles, pending) {
     if (pending[entry.key] === undefined) return entry
     return { key: entry.key, label: entry.label, detail: entry.detail, value: pending[entry.key] === true, busy: true }
   })
+}
+
+// --------------------------------------------------------- widget settings
+
+// Which tools the user told the widget to ignore, stored as one comma-separated
+// string so the setting stays hand-editable in shell.json and in Omarchy's own
+// settings dialog, which has no array field.
+function parseBackendIds(raw) {
+  var ids = []
+  var parts = String(raw || "").split(",")
+  for (var i = 0; i < parts.length; i++) {
+    var id = parts[i].trim().toLowerCase()
+    if (id !== "" && ids.indexOf(id) === -1) ids.push(id)
+  }
+  return ids
+}
+
+function joinBackendIds(ids) {
+  return ids.join(",")
+}
+
+function toggleBackendId(ids, id) {
+  var next = []
+  var found = false
+  for (var i = 0; i < ids.length; i++) {
+    if (ids[i] === id) found = true
+    else next.push(ids[i])
+  }
+  if (!found) next.push(id)
+  return next
 }
 
 // ------------------------------------------------------------ Proton VPN

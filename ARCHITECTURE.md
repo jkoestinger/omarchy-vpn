@@ -35,7 +35,7 @@ duck-types, so a backend that omits something simply renders as blank.
 
 | Property | Meaning |
 |----------|---------|
-| `detected` | Tool is installed and usable. Everything else is ignored until this is true |
+| `detected` | Tool is installed and has something to offer. Everything else is ignored until this is true |
 | `connected` | A tunnel is up |
 | `summary` | One line under the hero title |
 | `details` | `[{ label, value }]` rows shown while connected |
@@ -59,6 +59,11 @@ asks the user to pick.
 A backend may also expose `lockdownMode`, meaning "this tool blocks all traffic
 while it is disconnected". The controller warns about it before tearing that
 backend down for another one.
+
+It may also expose `setupHint`: one line explaining why it is not `detected`
+and what would change that. The panel shows the first non-empty hint in place
+of its own "install a VPN tool" line, which is the wrong advice for a tool that
+is installed and merely has nothing to connect to yet.
 
 ## Adding a backend
 
@@ -112,6 +117,25 @@ state lives on the panel, so it survives a close and reopen but not a shell
 restart, and folding the drawer while the cursor is inside it moves the cursor
 back to the hero rather than stranding it.
 
+**Two kinds of settings, two places.** The drawer above holds the *tool's*
+settings, which the widget only reflects. The gear in the header holds the
+*widget's* own, which it owns and must persist — currently one switch per
+detected tool. It writes through `bar.shell.updateEntryInline(moduleName,
+settings)` into this widget's entry in `~/.config/omarchy/shell.json`, the same
+file and entry Omarchy's settings dialog edits, so the two never disagree.
+`settings` arrives holding only the inline overrides, so writing it back cannot
+bake today's defaults into the config.
+
+Hidden tools are dropped from `availableBackends`: no chip, no polling, no
+weight in the bar icon, and exclusivity never tears them down. They are still
+probed, since the settings view has to list a hidden tool for you to switch it
+back on, and `detectedBackends` — everything present, hidden or not — is what
+that view renders. Hiding is a view, not a drawer: it replaces the body, because
+nothing in the connect list means anything while you are deciding which tools
+the widget should know about. It resets on close, unlike the tool drawer, and
+the gear stays reachable with the master switch gone so a widget with everything
+hidden is not a dead end.
+
 While a switch is in flight it shows the position the user just asked for, with
 `busy` set. The optimistic value is dropped only for the keys the tool has since
 agreed with, so a poll landing mid-flight cannot flick the other switches back —
@@ -157,6 +181,17 @@ NetworkManager keeps it outside the secrets store, so `nmcli --ask` never
 prompts for it — a profile without one authenticates as the empty user and the
 server answers `AUTH_FAILED`. The backend detects that case and reports the fix
 instead of opening a terminal that cannot succeed.
+
+**Eligibility, not just installation.** NetworkManager ships on every desktop,
+so "nmcli is here" says nothing about whether this machine has a tunnel to
+offer. It is `detected` only while at least one eligible profile exists — one
+whose kind matches an installed tool (`openvpn` for OpenVPN profiles, `wg` for
+WireGuard ones), since NetworkManager lists an OpenVPN profile whether or not
+anything can run it. With no eligible profile the backend disappears, and with
+it the chip, the hero, and the empty list they led to; the import instructions
+move to the panel's `setupHint` line so nothing is lost. Because `detected` now
+follows the profile list, `detect()` stays callable every poll: the binary
+probes run once, and after that it is a plain `refresh()`.
 
 **FILENAME is what keeps other tools' tunnels out.** When something brings up a
 WireGuard interface itself — Mullvad's `wg0-mullvad` — NetworkManager adopts the
