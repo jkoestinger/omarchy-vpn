@@ -74,12 +74,13 @@ Item {
   // detect() on a machine that has the tools and no profiles. The binaries do
   // not come and go; once probed, this is a plain refresh rather than three
   // more processes every poll.
-  function detect() {
-    if (_probed) {
+  function detect(force) {
+    if (nmcliProbe.running || openvpnProbe.running || wireguardProbe.running) return
+    if (_probed && force !== true) {
       refresh()
       return
     }
-    if (nmcliProbe.running || openvpnProbe.running || wireguardProbe.running) return
+    _probesDone = 0
     nmcliProbe.running = true
     openvpnProbe.running = true
     wireguardProbe.running = true
@@ -92,8 +93,11 @@ Item {
     if (root._toolsPresent) root.refresh()
   }
 
+  // The two passes share `listProcess.pending`, so a refresh landing while the
+  // second one is still out would hand it a list the details it is holding do
+  // not describe. One discovery at a time.
   function refresh() {
-    if (!_toolsPresent || listProcess.running) return
+    if (!_toolsPresent || listProcess.running || typesProcess.running) return
     listProcess.running = true
   }
 
@@ -254,19 +258,48 @@ Item {
     }
   }
 
+  // nmcli rejects the whole call when asked for a field it does not know, so an
+  // nmcli too old for FILENAME does not return rows without it — it returns
+  // nothing at all, and the backend would silently never appear. The first
+  // refusal drops the field and the list is fetched again; volatile-connection
+  // filtering is what is lost, which is a stray row rather than no backend.
+  property bool _filenameField: true
+  readonly property var _listCommand: _filenameField
+    ? ["nmcli", "-t", "-f", "NAME,UUID,TYPE,ACTIVE,FILENAME", "connection", "show"]
+    : ["nmcli", "-t", "-f", "NAME,UUID,TYPE,ACTIVE", "connection", "show"]
+
+  function unknownField(text) {
+    return /not among|unknown field|invalid field|allowed fields/i.test(String(text || ""))
+  }
+
+  // Retrying from inside onExited would re-enter the process that is still
+  // finishing, the same reason the connect chain hops through the event loop.
+  Timer {
+    id: listRetry
+    interval: 0
+    repeat: false
+    onTriggered: root.refresh()
+  }
+
   // Every tunnel-shaped connection: `vpn` whichever plugin backs it, plus
   // `wireguard`, which NetworkManager types as its own thing rather than as a
   // VPN plugin.
   Process {
     id: listProcess
     running: false
-    command: ["nmcli", "-t", "-f", "NAME,UUID,TYPE,ACTIVE,FILENAME", "connection", "show"]
+    command: root._listCommand
     stdout: StdioCollector { id: listStdout; waitForEnd: true }
     stderr: StdioCollector { id: listStderr; waitForEnd: true }
     property var pending: []
     onExited: function(exitCode) {
       if (exitCode !== 0) {
-        root.lastError = Model.elide(String(listStderr.text || "") || "Could not list NetworkManager connections", 140)
+        var failure = String(listStderr.text || "")
+        if (root._filenameField && root.unknownField(failure)) {
+          root._filenameField = false
+          listRetry.restart()
+          return
+        }
+        root.lastError = Model.elide(failure || "Could not list NetworkManager connections", 140)
         return
       }
 
@@ -304,9 +337,16 @@ Item {
     running: false
     command: []
     stdout: StdioCollector { id: typesStdout; waitForEnd: true }
+    stderr: StdioCollector { id: typesStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      // One profile deleted between the two passes fails the whole call. That
+      // is a reason to keep the list from last time, not to declare the machine
+      // has no tunnels: emptying it here drops `detected`, takes the chip away
+      // while a tunnel is up, and with it the only way to bring that tunnel
+      // down — disconnect() refuses to run undetected.
       if (exitCode !== 0) {
-        root.applyProfiles([])
+        root.lastError = Model.elide(
+          String(typesStderr.text || "") || "Could not read NetworkManager profile details", 140)
         return
       }
 

@@ -140,14 +140,19 @@ Item {
     onTriggered: root.refreshPublicIp()
   }
 
+  // Over HTTPS, and not by accident: a bare hostname would leave curl on plain
+  // HTTP, where anyone between this machine and the exit — the very party a
+  // VPN is run against — could hand back any address they liked and have the
+  // panel present it as proof the tunnel works. `--fail` keeps an error body
+  // out of the answer; the parser rejects anything that is not an address.
   Process {
     id: ipProcess
     running: false
-    command: ["curl", "--silent", "--max-time", "6", "checkip.amazonaws.com"]
+    command: ["curl", "--silent", "--fail", "--max-time", "6", "https://checkip.amazonaws.com"]
     stdout: StdioCollector { id: ipStdout; waitForEnd: true }
     onExited: function(exitCode) {
       root.ipFetching = false
-      var address = String(ipStdout.text || "").trim()
+      var address = Model.parsePublicIp(String(ipStdout.text || ""))
       if (exitCode === 0 && address !== "") {
         root.publicIp = address
         root.ipFailed = false
@@ -195,13 +200,39 @@ Item {
     var backend = root.active
     if (!backend) return
     if (backend.connected) {
+      clearNotice()
       backend.disconnect()
       return
     }
     runExclusive(backend, function() { backend.toggleConnection() })
   }
 
+  // A warning about the connect that is about to run, kept here rather than on
+  // the backend's lastError — connectTo() clears that as its first act, so the
+  // action being warned about would wipe the warning on its way out. Expires on
+  // its own, since it describes one attempt and not a standing condition.
+  property string notice: ""
+
+  Timer {
+    id: noticeTimer
+    interval: 12000
+    repeat: false
+    onTriggered: root.notice = ""
+  }
+
+  function setNotice(text) {
+    root.notice = text
+    noticeTimer.restart()
+  }
+
+  function clearNotice() {
+    root.notice = ""
+    noticeTimer.stop()
+  }
+
   function runExclusive(backend, action) {
+    clearNotice()
+
     var others = otherConnected(backend)
     if (others.length === 0) {
       action()
@@ -213,14 +244,19 @@ Item {
       // down, which is exactly when the incoming connect needs the network.
       // Say so up front rather than let it fail as a timeout.
       if (others[i].lockdownMode === true) {
-        backend.lastError = others[i].label + " blocks all traffic while it is disconnected, "
-          + "so connecting will not get through. Turn it off with: mullvad lockdown-mode set off"
+        setNotice(others[i].label + " blocks all traffic while it is disconnected, "
+          + "so connecting will not get through. Turn it off with: mullvad lockdown-mode set off")
       }
       others[i].disconnect()
     }
+    // Picking a second target while the first is still waiting means the second
+    // one: nobody clicks two countries wanting both. The deadline stays where
+    // the first click put it, though — resetting it on every click would let an
+    // impatient user push the bail-out back indefinitely and leave the panel
+    // waiting on a teardown that is never going to land.
+    if (!exclusiveWait.running) exclusiveWait.ticks = 0
     root._pendingAction = action
     root._pendingBackend = backend
-    exclusiveWait.ticks = 0
     exclusiveWait.restart()
   }
 
@@ -259,9 +295,17 @@ Item {
 
   // A hidden tool is still probed — the settings view has to list it for you to
   // switch it back on — but never polled: not asking is the point of hiding it.
-  function refreshAll() {
+  //
+  // Binaries do not come and go while the shell runs, so a tool that answered
+  // "not installed" is asked once and then left alone; the poll would otherwise
+  // spawn a probe per missing tool every interval, forever, to re-answer a
+  // question whose answer never changed. `force` is the user asking — opening
+  // the panel, pressing r, middle-clicking the icon — which is exactly when
+  // something might have been installed since.
+  function refreshAll(force) {
+    var recheck = force === true
     for (var i = 0; i < backends.length; i++) {
-      if (!backends[i].detected) backends[i].detect()
+      if (!backends[i].detected) backends[i].detect(recheck)
       else if (!isHidden(backends[i].backendId)) backends[i].refresh()
     }
   }

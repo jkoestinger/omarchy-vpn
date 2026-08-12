@@ -77,7 +77,7 @@ depending on what the cursor is on. `h`/`l` move along the chip row and between
 the gear and the master switch in the header, `s` cycles tools, `/` searches
 countries, `d` disconnects, `r` refreshes, `Esc` closes.
 
-The public IP is fetched from `checkip.amazonaws.com` — never on a timer, only
+The public IP is fetched from `https://checkip.amazonaws.com` — never on a timer, only
 when the connection changes, when the panel first opens, or when you ask.
 
 ## Requirements

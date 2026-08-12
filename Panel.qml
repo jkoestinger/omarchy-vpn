@@ -60,8 +60,14 @@ Panel {
   readonly property bool headerHasCursor: cursorActive && focusSection === "header"
   readonly property bool gearHasCursor: headerHasCursor && headerIndex === 0
   readonly property bool switchHasCursor: headerHasCursor && headerIndex === 1
+  // The controller's notice outranks the backend's own line: it says why the
+  // connect now under way cannot land, which is worth more than watching it
+  // report that it is under way.
+  readonly property bool statusIsError: vpn.notice !== ""
+    || (backend !== null && backend.lastError !== "" && backend.actionStatus === "")
   readonly property string statusLine: {
     if (providersOpen) return ""
+    if (vpn.notice !== "") return vpn.notice
     if (!backend) {
       if (vpn.detectedBackends.length > 0) return "Every VPN tool is hidden. Turn one back on with the gear."
       return vpn.setupHint !== ""
@@ -157,7 +163,13 @@ Panel {
     selectBackend(options[next].backendId)
   }
 
+  // The filter field belongs to the panel, not to the tool, so it does not
+  // travel with the chip. Both ends are cleared on the way across: the outgoing
+  // tool would otherwise keep a filter nothing is showing, and the field would
+  // sit there full of text the incoming list is not filtered by.
   function selectBackend(backendId) {
+    if (root.backend) root.backend.filter = ""
+    filterField.text = ""
     vpn.selectBackend(backendId)
     rowIndex = 0
     toggleIndex = 0
@@ -241,6 +253,7 @@ Panel {
     providersOpen = !providersOpen
     rowIndex = 0
     toggleIndex = 0
+    if (backend) backend.filter = ""
     filterField.text = ""
     setHeaderCursor(0)
   }
@@ -332,9 +345,12 @@ Panel {
     // open the panel to connect, not to reconsider which tools exist.
     providersOpen = false
     focusSection = "rows"
+    if (backend) backend.filter = ""
     filterField.text = ""
     if (panelFlick) panelFlick.contentY = 0
-    vpn.refreshAll()
+    // Opening the panel re-probes for tools installed since the shell started;
+    // the background poll deliberately does not.
+    vpn.refreshAll(true)
     // The address is fetched on connection changes, not on a timer, so a first
     // open with nothing cached is the one other moment worth asking.
     if (vpn.publicIp === "") vpn.refreshPublicIp()
@@ -373,7 +389,7 @@ Panel {
     function show(): void { root.open() }
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
-    function refresh(): string { vpn.refreshAll(); vpn.refreshPublicIp(); return "ok" }
+    function refresh(): string { vpn.refreshAll(true); vpn.refreshPublicIp(); return "ok" }
     function status(): string { return vpn.barSummary }
     function ip(): string { return vpn.publicIp !== "" ? vpn.publicIp : "unknown" }
     function backends(): string {
@@ -424,7 +440,7 @@ Panel {
     tooltipText: "VPN: " + vpn.barSummary
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.RightButton) vpn.toggleActive()
-      else if (buttonCode === Qt.MiddleButton) { vpn.refreshAll(); vpn.refreshPublicIp() }
+      else if (buttonCode === Qt.MiddleButton) { vpn.refreshAll(true); vpn.refreshPublicIp() }
       else root.toggle()
     }
   }
@@ -455,7 +471,7 @@ Panel {
       onTextKey: function(t) {
         if (t === "/" && root.filterVisible) filterField.forceActiveFocus()
         else if (t === "d" || t === "D") { if (root.backend) root.backend.disconnect() }
-        else if (t === "r" || t === "R") { vpn.refreshAll(); vpn.refreshPublicIp() }
+        else if (t === "r" || t === "R") { vpn.refreshAll(true); vpn.refreshPublicIp() }
         else if (t === "s" || t === "S") { if (root.switcherVisible) root.stepBackend(1) }
       }
 
@@ -556,7 +572,11 @@ Panel {
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
               visible: root.masterSwitchVisible
-              checked: vpn.anyConnected
+              // The tool being looked at, not "anything at all". Flipping this
+              // calls toggleActive(), which acts on the selected backend — a
+              // switch reading "on" because a *different* tool is connected
+              // would take that tunnel down and bring this one up instead.
+              checked: root.backend ? root.backend.connected : false
               busy: root.backend ? root.backend.busy : false
               hasCursor: root.switchHasCursor
               foreground: root.foreground
@@ -565,7 +585,7 @@ Panel {
 
               PanelToolTip {
                 visible: masterSwitch.containsMouse
-                text: vpn.anyConnected ? "Disconnect" : "Connect"
+                text: masterSwitch.checked ? "Disconnect" : "Connect"
                 fontFamily: root.fontFamily
               }
             }
@@ -651,7 +671,7 @@ Panel {
             visible: root.statusLine !== ""
             width: parent.width
             text: root.statusLine
-            color: root.backend && root.backend.lastError !== "" && root.backend.actionStatus === "" ? root.urgent : root.dim
+            color: root.statusIsError ? root.urgent : root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.bodySmall
             wrapMode: Text.WordWrap
