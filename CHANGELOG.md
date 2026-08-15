@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.2.0](https://github.com/jkoestinger/omarchy-vpn/compare/v1.1.0...v1.2.0) (2026-08-15)
+
+
+### Added
+
+* add a Windscribe backend ([f5f323a](https://github.com/jkoestinger/omarchy-vpn/commit/f5f323af69d7ee11a3435467e81940b821b0064d))
+* add a Windscribe backend ([45e4055](https://github.com/jkoestinger/omarchy-vpn/commit/45e405566f4be762d66efbdd781bdfe507d1e9f0))
+
+
+### Fixed
+
+* stop the Windscribe queue spinning, and lying, when things go wrong ([3856c98](https://github.com/jkoestinger/omarchy-vpn/commit/3856c989bd44d0d58f69eeed566ef83fcf492590))
+
+
+### Changed
+
+* make a backend two files of its own instead of a section of four ([#15](https://github.com/jkoestinger/omarchy-vpn/issues/15)) ([23992ed](https://github.com/jkoestinger/omarchy-vpn/commit/23992edfc94d21d46edbfbc3467b914556b6c7ae))
+
 ## 1.1.0
 
 ### Added

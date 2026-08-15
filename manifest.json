@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "jkoestinger.vpn",
   "name": "VPN",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": "Justin",
   "license": "MIT",
   "description": "VPN status and switching in the Omarchy bar, across whichever VPN tools are installed.",
@@ -38,7 +38,13 @@
         "key": "preferredBackend",
         "type": "enum",
         "label": "VPN tool shown first",
-        "options": ["Auto", "Proton VPN", "Mullvad", "Windscribe", "NetworkManager"],
+        "options": [
+          "Auto",
+          "Proton VPN",
+          "Mullvad",
+          "Windscribe",
+          "NetworkManager"
+        ],
         "defaultValue": "Auto",
         "description": "Auto picks whichever detected tool is connected, otherwise the first one found."
       },
