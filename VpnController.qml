@@ -1,6 +1,6 @@
 import QtQuick
 import Quickshell.Io
-import "Model.js" as Model
+import "model/Shared.js" as Shared
 
 // Owns every VPN backend, decides which one the panel is looking at, and polls
 // the detected ones. The panel talks to `active` and never to a specific tool.
@@ -39,7 +39,7 @@ Item {
   // about the machine, so the settings view lists these — including the hidden
   // ones, which would otherwise be unreachable once they were switched off.
   readonly property var detectedBackends: backends.filter(function(backend) { return backend.detected })
-  readonly property var hiddenBackendIds: Model.parseBackendIds(setting("hiddenBackends", ""))
+  readonly property var hiddenBackendIds: Shared.parseBackendIds(setting("hiddenBackends", ""))
   readonly property var availableBackends: detectedBackends.filter(function(backend) {
     return !root.isHidden(backend.backendId)
   })
@@ -156,7 +156,7 @@ Item {
     stdout: StdioCollector { id: ipStdout; waitForEnd: true }
     onExited: function(exitCode) {
       root.ipFetching = false
-      var address = Model.parsePublicIp(String(ipStdout.text || ""))
+      var address = Shared.parsePublicIp(String(ipStdout.text || ""))
       if (exitCode === 0 && address !== "") {
         root.publicIp = address
         root.ipFailed = false
@@ -179,12 +179,18 @@ Item {
     return n
   }
 
+  // The setting stores the label rather than the id, because it is written by
+  // Omarchy's settings dialog from the enum in manifest.json and a user reading
+  // that list should see the tool's name. Matching against the backends
+  // themselves keeps the two ends of that mapping from drifting apart: a
+  // backend is the only thing that knows its own label, and "Auto" — along with
+  // a stale name left behind by a backend that has since been renamed or
+  // removed — falls through to "" and lets the usual precedence decide.
   function preferredId() {
     var preferred = String(setting("preferredBackend", "Auto"))
-    if (preferred === "Proton VPN") return "proton"
-    if (preferred === "Mullvad") return "mullvad"
-    if (preferred === "Windscribe") return "windscribe"
-    if (preferred === "NetworkManager") return "networkmanager"
+    for (var i = 0; i < root.backends.length; i++) {
+      if (root.backends[i].label === preferred) return root.backends[i].backendId
+    }
     return ""
   }
 

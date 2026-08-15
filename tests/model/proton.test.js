@@ -1,0 +1,116 @@
+// Proton VPN: how `protonvpn` formats what it prints, and the rows built
+// from it.
+const { test, eq, Shared, Proton } = require("../harness.js")
+
+test("parseProtonStatus reads the labelled block", () => {
+  const status = Proton.parseProtonStatus([
+    "Status: Connected",
+    "Server: NL#42",
+    "Country: Netherlands",
+    "Load: 40%",
+    "Protocol: WireGuard"
+  ].join("\n"))
+  eq(status.connected, true)
+  eq(status.server, "NL#42")
+  eq(status.country, "Netherlands")
+  eq(status.load, "40%")
+  eq(status.protocol, "WireGuard")
+})
+
+test("parseProtonStatus splits the combined server-and-place field", () => {
+  const status = Proton.parseProtonStatus("Status: Connected\nServer: CH#1129 in Zurich, Switzerland")
+  eq(status.server, "CH#1129")
+  eq(status.city, "Zurich")
+  eq(status.country, "Switzerland")
+  eq(Proton.protonSummary(status), "CH#1129 · Zurich, Switzerland")
+})
+
+test("parseProtonStatus reads the older bare sentence", () => {
+  const status = Proton.parseProtonStatus("Connected to NL#42")
+  eq(status.connected, true)
+  eq(status.server, "NL#42")
+})
+
+test("parseProtonStatus treats disconnected and noise as not connected", () => {
+  eq(Proton.parseProtonStatus("Status: Disconnected").connected, false)
+  eq(Proton.parseProtonStatus("").connected, false)
+  eq(Proton.parseProtonStatus("garbage\n\n---").connected, false)
+  eq(Proton.parseProtonStatus("").statusText, "Disconnected")
+  eq(Proton.protonSummary(Proton.parseProtonStatus("")), "Not connected")
+})
+
+test("parseProtonCountries skips the header, the rule, and the notice", () => {
+  eq(Proton.parseProtonCountries([
+    "Server list is outdated, updating...",
+    "Country                  Code",
+    "-----------------------  ----",
+    "Netherlands              NL",
+    "United States            US"
+  ].join("\n")), [
+    { name: "Netherlands", code: "NL" },
+    { name: "United States", code: "US" }
+  ])
+})
+
+test("parseProtonConfig reads the two-column table", () => {
+  const config = Proton.parseProtonConfig([
+    "Setting                  Value",
+    "-----------------------  ------------",
+    "netshield                malware-only",
+    "kill-switch              off"
+  ].join("\n"))
+  eq(config.loaded, true)
+  eq(config.values["netshield"], "malware-only")
+  eq(config.values["kill-switch"], "off")
+  eq(Proton.parseProtonConfig("").loaded, false)
+})
+
+test("protonToggles reports mode-carrying settings as on", () => {
+  const config = Proton.parseProtonConfig("netshield  malware-only\nkill-switch  advanced")
+  const toggles = Proton.protonToggles(config)
+  eq(toggles.map(t => t.key), ["kill-switch", "netshield", "port-forwarding"])
+  eq(toggles[0].value, true)
+  eq(toggles[0].detail, "Mode: advanced")
+  eq(toggles[1].value, true)
+  eq(toggles[1].detail, "Blocking: malware-only")
+  eq(toggles[2].value, false)
+  eq(Proton.protonToggles(Proton.parseProtonConfig("")), [])
+})
+
+test("protonToggleArgs restores the remembered mode instead of a default", () => {
+  // Switching NetShield off and on again must not silently upgrade a
+  // deliberate "malware-only" to the wider default.
+  eq(Proton.protonToggleArgs("netshield", true, "malware-only"),
+    ["config", "set", "netshield", "malware-only"])
+  eq(Proton.protonToggleArgs("netshield", true, ""),
+    ["config", "set", "netshield", "malware-ads-trackers"])
+  eq(Proton.protonToggleArgs("kill-switch", true, ""),
+    ["config", "set", "kill-switch", "standard"])
+  eq(Proton.protonToggleArgs("netshield", false, "malware-only"),
+    ["config", "set", "netshield", "off"])
+  eq(Proton.protonToggleArgs("nonsense", true, ""), [])
+})
+
+test("protonModes remembers the last non-off value", () => {
+  const first = Proton.protonModes(Proton.parseProtonConfig("netshield  malware-only"), {})
+  eq(first["netshield"], "malware-only")
+  const after = Proton.protonModes(Proton.parseProtonConfig("netshield  off"), first)
+  eq(after["netshield"], "malware-only")
+})
+
+test("protonCountryTargets puts favorites first and filters over name and code", () => {
+  const countries = [
+    { name: "Netherlands", code: "NL" },
+    { name: "Switzerland", code: "CH" }
+  ]
+  eq(Proton.protonCountryTargets(countries, ["CH"], "").map(t => t.label),
+    ["Switzerland", "Netherlands"])
+  eq(Proton.protonCountryTargets(countries, ["CH"], "nl").map(t => t.label), ["Netherlands"])
+  eq(Proton.protonCountryTargets(countries, [], "zzz"), [])
+  eq(Proton.protonCountryTargets(countries, [], "")[0].args, ["--country", "NL"])
+})
+
+test("favoriteCodes normalises and de-duplicates", () => {
+  eq(Shared.favoriteCodes(" ch , NL ,ch, "), ["CH", "NL"])
+  eq(Shared.favoriteCodes(null), [])
+})

@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell.Io
-import "Model.js" as Model
+import "model/Shared.js" as Shared
+import "model/Proton.js" as Proton
 
 // Proton VPN backend, driven by the `protonvpn` CLI. Implements the backend
 // contract documented in VpnController.qml.
@@ -13,21 +14,24 @@ Item {
 
   readonly property string backendId: "proton"
   readonly property string label: "Proton VPN"
-  readonly property string glyph: Model.GLYPH_VPN
+  // What a user would go and install to make this backend useful, which is not
+  // always the label: nobody installs "NetworkManager" to get a VPN.
+  readonly property var installNames: ["Proton VPN"]
+  readonly property string glyph: Shared.GLYPH_VPN
   readonly property bool supportsFilter: true
   readonly property string filterPlaceholder: "Filter countries — press / to search"
 
   property bool detected: false
-  property var status: Model.parseProtonStatus("")
+  property var status: Proton.parseProtonStatus("")
   property var countries: []
   property bool countriesLoaded: false
-  property var config: Model.parseProtonConfig("")
+  property var config: Proton.parseProtonConfig("")
   property string actionStatus: ""
   property string lastError: ""
 
   // Switches the panel draws under the detail rows. Values come from
   // `protonvpn config list`; the widget stores none of them.
-  readonly property var toggles: Model.applyPendingToggles(Model.protonToggles(config), _pendingToggles)
+  readonly property var toggles: Shared.applyPendingToggles(Proton.protonToggles(config), _pendingToggles)
   property var _pendingToggles: ({})
   // Which switch is in flight, so a refusal rolls back the right one.
   property string _toggleKey: ""
@@ -41,9 +45,9 @@ Item {
 
   readonly property bool connected: _desired === -1 ? status.connected : (_desired === 1)
   readonly property bool busy: connectProcess.running || statusProcess.running
-  readonly property string summary: Model.protonSummary(status)
-  readonly property var details: Model.protonDetails(status)
-  readonly property var favorites: Model.favoriteCodes(setting("favoriteCountries", "CH,NL,US"))
+  readonly property string summary: Proton.protonSummary(status)
+  readonly property var details: Proton.protonDetails(status)
+  readonly property var favorites: Shared.favoriteCodes(setting("favoriteCountries", "CH,NL,US"))
   readonly property string emptyText: countriesLoaded ? "No countries match." : "Loading countries…"
   // Server names carry their country: "NL#42" is the Netherlands row.
   readonly property string currentKey: {
@@ -52,8 +56,8 @@ Item {
     return match ? "country:" + match[1].toUpperCase() : ""
   }
   readonly property var targets: filter === ""
-    ? Model.protonQuickTargets().concat(Model.protonCountryTargets(countries, favorites, ""))
-    : Model.protonCountryTargets(countries, favorites, filter)
+    ? Proton.protonQuickTargets().concat(Proton.protonCountryTargets(countries, favorites, ""))
+    : Proton.protonCountryTargets(countries, favorites, filter)
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -80,7 +84,7 @@ Item {
   function setToggle(key, value) {
     if (!detected || toggleProcess.running) return
 
-    var args = Model.protonToggleArgs(key, value, _lastModes[key])
+    var args = Proton.protonToggleArgs(key, value, _lastModes[key])
     if (args.length === 0) return
 
     var pending = {}
@@ -96,15 +100,15 @@ Item {
   }
 
   function applyConfig(raw) {
-    var parsed = Model.parseProtonConfig(raw)
+    var parsed = Proton.parseProtonConfig(raw)
     root.config = parsed
     // Remember the mode behind each on/off switch, so turning one back on
     // restores what was there instead of the default.
-    root._lastModes = Model.protonModes(parsed, root._lastModes)
+    root._lastModes = Proton.protonModes(parsed, root._lastModes)
 
     // "on" is not one value here — kill switch and NetShield each have modes —
     // so agreement is checked against the switch positions, not the raw text.
-    var current = Model.protonToggles(parsed)
+    var current = Proton.protonToggles(parsed)
     var pending = {}
     var changed = false
     for (var key in _pendingToggles) {
@@ -150,7 +154,7 @@ Item {
   }
 
   function applyStatus(raw) {
-    var parsed = Model.parseProtonStatus(raw)
+    var parsed = Proton.parseProtonStatus(raw)
     root.status = parsed
     // Reality caught up with the pending connect/disconnect — stop overriding.
     if (_desired !== -1 && parsed.connected === (_desired === 1)) _desired = -1
@@ -213,7 +217,7 @@ Item {
         root.applyStatus(String(statusStdout.text || ""))
         root.lastError = ""
       } else {
-        root.lastError = Model.elide(String(statusStderr.text || statusStdout.text || "") || "Could not read Proton VPN status", 140)
+        root.lastError = Shared.elide(String(statusStderr.text || statusStdout.text || "") || "Could not read Proton VPN status", 140)
       }
     }
   }
@@ -227,7 +231,7 @@ Item {
     onExited: function(exitCode) {
       if (exitCode !== 0) {
         root._desired = -1
-        root.lastError = Model.elide(String(connectStderr.text || connectStdout.text || "") || "Proton VPN command failed", 140)
+        root.lastError = Shared.elide(String(connectStderr.text || connectStdout.text || "") || "Proton VPN command failed", 140)
       } else {
         root.lastError = ""
       }
@@ -257,7 +261,7 @@ Item {
     stderr: StdioCollector { id: toggleStderr; waitForEnd: true }
     onExited: function(exitCode) {
       if (exitCode !== 0) {
-        root.lastError = Model.elide(
+        root.lastError = Shared.elide(
           String(toggleStderr.text || toggleStdout.text || "") || "Proton VPN refused that setting", 140)
         root.clearPending(root._toggleKey)
       }
@@ -276,7 +280,7 @@ Item {
     stdout: StdioCollector { id: countriesStdout; waitForEnd: true }
     onExited: function(exitCode) {
       if (exitCode !== 0) return
-      root.countries = Model.parseProtonCountries(String(countriesStdout.text || ""))
+      root.countries = Proton.parseProtonCountries(String(countriesStdout.text || ""))
       root.countriesLoaded = true
       if (root.countries.length === 0) {
         root.lastError = "Could not read the country list. Check: protonvpn countries list"
