@@ -1122,6 +1122,11 @@ function windscribeRegions(locations) {
   for (var i = 0; i < locations.length; i++) {
     var location = locations[i]
     if (isWindscribeBestRow(location) || location.disabled || location.region === "") continue
+    // The name is handed to `windscribe-cli connect` as an argument. No shell is
+    // involved, so there is nothing to inject, but a name starting with a dash
+    // would be read as an option rather than as a place. No such region exists;
+    // a row that claimed to be one would not be a region either.
+    if (location.region.charAt(0) === "-") continue
 
     var key = location.region.toLowerCase()
     var region = index[key]
@@ -1261,9 +1266,101 @@ function windscribeToggleArgs(key, value) {
 // `windscribe-cli` holds a lock for as long as it runs, and a second
 // invocation does not wait its turn: it prints this and exits without doing
 // the work. The backend serialises its own calls, so seeing it means something
-// outside the widget is talking to the app — the user at a terminal, or the
-// desktop client. It is not an answer about the tunnel, and nothing should be
-// concluded from it.
+// outside the widget is talking to the app — the user at a terminal, or this
+// same widget on another monitor, since each bar instantiates it separately.
+// It is not an answer about the tunnel, and nothing should be concluded from
+// it.
 function isWindscribeCliLocked(text) {
   return /already running/i.test(String(text || ""))
+}
+
+// The firewall is a kill switch, and `lockdownMode` is read to decide whether
+// to warn someone that switching tools will not get through. "The tool never
+// said" has to weigh the same as "the tool said yes": the cost of a warning
+// nobody needed is a sentence, and the cost of the missing one is a connect
+// that fails for reasons the panel had already been told about and forgot.
+//
+// The summary line deliberately does not use this — it states what the tool
+// reported, and an unrecognised firewall line is not a report that traffic is
+// blocked. One weighs a risk, the other states a fact.
+function windscribeBlocksWhileDown(status) {
+  if (!status || !status.loaded) return false
+  return status.firewallOn || !status.firewallKnown
+}
+
+// --------------------------------------------------- Windscribe call queue
+//
+// Because two `windscribe-cli` invocations may not overlap, every call the
+// backend makes is a job in a queue of one runner. The rules are here rather
+// than in the QML so they can be tested: this is a reducer over (queue,
+// running job), not process plumbing, and it is the part that has been wrong.
+
+var WINDSCRIBE_MAX_ATTEMPTS = 4
+
+// Reads answer a question; actions change something. That is the whole
+// difference the queue cares about.
+function isWindscribeReadJob(kind) {
+  return kind === "status" || kind === "locations"
+}
+
+// Reads are idempotent, so a second one waiting behind the first is a stale
+// answer nobody asked for: the poll fires faster than the CLI replies, and a
+// backlog of them would keep the panel a cycle behind for as long as the shell
+// ran. A click goes to the front, because waiting out a two-hundred line
+// location fetch is not what "connect" should feel like.
+//
+// Returns the queue unchanged when the job is a duplicate read.
+function windscribeEnqueue(queue, runningKind, kind, args) {
+  var next = queue.slice()
+  var job = { kind: kind, args: args, attempts: 0 }
+
+  if (!isWindscribeReadJob(kind)) {
+    next.unshift(job)
+    return next
+  }
+
+  if (runningKind === kind) return queue
+  for (var i = 0; i < next.length; i++) {
+    if (next[i].kind === kind) return queue
+  }
+  next.push(job)
+  return next
+}
+
+// A job that lost the lock goes back to the head of its own queue, one attempt
+// older. A fresh object rather than a mutated one, so nothing that captured the
+// old job sees its attempt count move underneath it.
+function windscribeRequeue(queue, job) {
+  var next = queue.slice()
+  next.unshift({ kind: job.kind, args: job.args, attempts: job.attempts + 1 })
+  return next
+}
+
+// Bounded, because a lock held by something that is never going to let go is
+// not worth knocking on forever. Past the last attempt the job runs its
+// finisher, which treats a refusal as inconclusive rather than as news.
+function windscribeCanRetry(job) {
+  return !!job && job.attempts < WINDSCRIBE_MAX_ATTEMPTS
+}
+
+// The jitter is not decoration. Two widget instances that started together lose
+// together — that is what a shared lock and a shared poll interval do — and
+// backing off by the same amount would have them collide again on every round.
+// Something has to break the tie, and the attempt count cannot: it is identical
+// on both sides. `roll` is a 0..1 draw, passed in so this stays testable.
+function windscribeRetryDelay(attempts, roll) {
+  var draw = Number(roll)
+  if (!isFinite(draw) || draw < 0) draw = 0
+  if (draw > 1) draw = 1
+  return 120 * attempts + Math.floor(draw * 280)
+}
+
+// Whether a job of any of these kinds is running or waiting — what stops a
+// second click landing on top of the first.
+function windscribePending(queue, runningKind, kinds) {
+  if (kinds.indexOf(runningKind) >= 0) return true
+  for (var i = 0; i < queue.length; i++) {
+    if (kinds.indexOf(queue[i].kind) >= 0) return true
+  }
+  return false
 }

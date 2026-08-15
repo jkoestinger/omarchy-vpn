@@ -40,8 +40,13 @@ Item {
 
   property bool _present: false
   property bool _probed: false
-  // The app is not answering — installed, but nothing behind the socket.
+  // The app is not answering — installed, but nothing behind the socket. What
+  // the tool last said is kept rather than blanked, so this means "the reading
+  // below is old", not "there is nothing to report".
   property bool _statusFailed: false
+  // A reading has landed at least once, so `_statusFailed` describes something
+  // going stale rather than a tool that has never answered.
+  property bool _statusSeen: false
 
   // The binary alone says nothing: `windscribe-cli` is a client, and a client
   // nobody is logged into has no locations to offer and cannot connect. The
@@ -50,15 +55,16 @@ Item {
 
   readonly property string setupHint: {
     if (!_present) return ""
-    if (_statusFailed) return "Windscribe is installed but its app is not answering. Start Windscribe, then reopen this panel."
+    if (_statusFailed && !_statusSeen) return "Windscribe is installed but its app is not answering. Start Windscribe, then reopen this panel."
     if (status.loaded && !status.loggedIn) return "Windscribe is installed but not logged in. Log in with: windscribe-cli login"
     return ""
   }
 
   // Windscribe's firewall is a kill switch: while it is on and the tunnel is
   // down, nothing leaves the machine at all — including the traffic another
-  // backend's connect needs.
-  readonly property bool lockdownMode: detected && status.firewallOn && !connected
+  // backend's connect needs. An unreadable firewall line counts as "might be" —
+  // see windscribeBlocksWhileDown.
+  readonly property bool lockdownMode: detected && !connected && Model.windscribeBlocksWhileDown(status)
   readonly property string lockdownHint: "windscribe-cli firewall off"
 
   // The one setting the CLI can change. Its value is always what the app last
@@ -105,64 +111,26 @@ Item {
   // these queues, each disciplined and each unaware of the other. Ordering
   // within one instance is not enough — see the retry in onExited.
   property var _queue: []
-  property string _running: ""
+  // The job on the wire, or null. Its `kind` is the only record of what is
+  // running — two fields saying the same thing is two fields that can disagree.
   property var _current: null
+  readonly property string _running: _current ? _current.kind : ""
 
-  readonly property bool _actionPending: {
-    if (_running === "connect" || _running === "disconnect") return true
-    for (var i = 0; i < _queue.length; i++) {
-      if (_queue[i].kind === "connect" || _queue[i].kind === "disconnect") return true
-    }
-    return false
-  }
+  readonly property bool _actionPending: Model.windscribePending(_queue, _running, ["connect", "disconnect"])
+  readonly property bool _togglePending: Model.windscribePending(_queue, _running, ["toggle"])
 
-  readonly property bool _togglePending: {
-    if (_running === "toggle") return true
-    for (var i = 0; i < _queue.length; i++) {
-      if (_queue[i].kind === "toggle") return true
-    }
-    return false
-  }
-
-  // Reads are idempotent, so a second one waiting behind the first is a stale
-  // answer nobody asked for: the poll fires faster than the CLI replies, and a
-  // backlog of them would keep the panel a cycle behind for as long as the
-  // shell ran. A click goes to the front, because waiting out a two-hundred
-  // line location fetch is not what "connect" should feel like.
   function enqueue(kind, args) {
-    if (kind === "status" || kind === "locations") {
-      if (_running === kind) return
-      for (var i = 0; i < _queue.length; i++) {
-        if (_queue[i].kind === kind) return
-      }
-    }
-
-    var queue = _queue.slice()
-    var job = { kind: kind, args: args, attempts: 0 }
-    if (kind === "status" || kind === "locations") queue.push(job)
-    else queue.unshift(job)
+    var queue = Model.windscribeEnqueue(_queue, _running, kind, args)
+    if (queue === _queue) return
     _queue = queue
     pump()
   }
 
-  // Put a job that lost the lock back at the head of its own queue. Bounded,
-  // because a lock held by something that is never going to let go is not
-  // something to keep knocking on: past the last attempt the job runs its
-  // finisher, which treats the refusal as inconclusive rather than as news.
   function retry(job) {
-    if (job.attempts >= 4) return false
+    if (!Model.windscribeCanRetry(job)) return false
 
-    job.attempts += 1
-    var queue = _queue.slice()
-    queue.unshift(job)
-    _queue = queue
-
-    // The jitter is not decoration. Two instances that started together lose
-    // together — that is what a shared lock and a shared poll interval do — and
-    // backing off by the same amount would have them collide again on every
-    // round. Something has to break the tie, and the attempt count cannot: it
-    // is identical on both sides.
-    retryTimer.interval = 120 * job.attempts + Math.floor(Math.random() * 280)
+    _queue = Model.windscribeRequeue(_queue, job)
+    retryTimer.interval = Model.windscribeRetryDelay(job.attempts + 1, Math.random())
     retryTimer.restart()
     return true
   }
@@ -174,22 +142,18 @@ Item {
     onTriggered: root.pump()
   }
 
+  // Never starts a job while one is on the wire, and never arranges to be
+  // called back for one either: the running job's onExited pumps, so a caller
+  // who arrives mid-job can simply leave. An earlier version re-armed a
+  // zero-interval timer here, which turned a hung CLI into a shell that spun
+  // through the event loop for as long as the hang lasted.
   function pump() {
-    if (_running !== "" || _queue.length === 0) return
-    // The bookkeeping is cleared in onExited, which can run a moment before the
-    // process itself reports finished. Come back rather than drop the job: the
-    // queue is only pumped on an enqueue otherwise, and the next one may be a
-    // poll interval away.
-    if (cliProcess.running) {
-      pumpTimer.restart()
-      return
-    }
+    if (_current !== null || cliProcess.running || _queue.length === 0) return
 
     var queue = _queue.slice()
     var job = queue.shift()
     _queue = queue
     _current = job
-    _running = job.kind
     cliProcess.command = ["windscribe-cli"].concat(job.args)
     cliProcess.running = true
     stallTimer.restart()
@@ -197,29 +161,34 @@ Item {
 
   // Starting the next job from inside onExited would re-enter the process that
   // is still finishing, the same reason the other backends hop through a timer
-  // to chain their two-step connects.
+  // to chain their two-step connects. The delay is small but not zero, so that
+  // arriving a moment before the process reports finished costs one more tick
+  // rather than a spin.
   Timer {
     id: pumpTimer
-    interval: 0
+    interval: 50
     repeat: false
     onTriggered: root.pump()
   }
 
   // One job at a time only works while every job ends. A process that never
-  // reports back would leave `_running` set forever, and since a read already
-  // in flight is never queued twice, the backend would stop asking about the
-  // tunnel for as long as the shell ran and quietly present its last reading as
-  // current. Nothing this CLI does takes half a minute, so past that the job is
-  // written off. `pump` still refuses to start while the process object says it
-  // is running, so writing it off cannot put two of them on the lock.
+  // reports back would hold `_current` forever, and since a read already in
+  // flight is never queued twice, the backend would stop asking about the
+  // tunnel for as long as the shell ran while still presenting its last reading
+  // as current.
+  //
+  // So the process is killed rather than forgotten. Forgetting it would leave
+  // it holding the machine-wide lock — blocking every other monitor's copy of
+  // this widget as well as this one — while `pump` refused to start anything
+  // behind it. Killing it makes `onExited` fire, which does the bookkeeping by
+  // the usual path. Nothing this CLI does takes half a minute.
   Timer {
     id: stallTimer
     interval: 30000
     repeat: false
     onTriggered: {
-      root._running = ""
       root._current = null
-      root.pump()
+      cliProcess.running = false
     }
   }
 
@@ -232,6 +201,11 @@ Item {
   function detect(force) {
     if (presenceProbe.running) return
     if (_probed && force !== true) return
+    // `force` is the user asking again, which is the one moment the location
+    // list could have gone stale in a way they can see: upgrading the account
+    // turns "Pro only" rows into connectable ones, and nothing else would ever
+    // re-read them.
+    if (force === true) locationsLoaded = false
     presenceProbe.running = true
   }
 
@@ -269,6 +243,17 @@ Item {
     pendingTimer.restart()
   }
 
+  // Connecting and disconnecting are allowed to move the firewall on their own:
+  // with the app's firewall mode on `Auto` it goes on before a connect and off
+  // after a disconnect. A switch still waiting to be agreed with would never be,
+  // and the panel would end up accusing the tool of ignoring a setting it had
+  // simply been told to change by something else.
+  function forgetPendingToggles() {
+    if (Object.keys(_pendingToggles).length === 0) return
+    _pendingToggles = ({})
+    pendingTimer.stop()
+  }
+
   function clearPending(key) {
     var pending = {}
     for (var name in _pendingToggles) {
@@ -287,6 +272,7 @@ Item {
     _desired = 1
     lastError = ""
     actionStatus = "Connecting to " + target.label + "…"
+    forgetPendingToggles()
     enqueue("connect", ["connect", "-n"].concat(target.args || []))
   }
 
@@ -295,6 +281,7 @@ Item {
     _desired = 0
     lastError = ""
     actionStatus = "Disconnecting…"
+    forgetPendingToggles()
     enqueue("disconnect", ["disconnect", "-n"])
   }
 
@@ -408,7 +395,6 @@ Item {
       var err = String(cliStderr.text || "")
 
       stallTimer.stop()
-      root._running = ""
       root._current = null
 
       // Somebody else had the lock. Nothing was read and nothing was done, so
@@ -417,7 +403,7 @@ Item {
       if (job && root.cliLocked(out, err) && root.retry(job)) return
 
       if (kind === "status") root.finishStatus(exitCode, out, err)
-      else if (kind === "locations") root.finishLocations(exitCode, out)
+      else if (kind === "locations") root.finishLocations(exitCode, out, err)
       else if (kind === "toggle") root.finishToggle(exitCode, out, err)
       else if (kind !== "") root.finishAction(exitCode, out, err)
 
@@ -438,23 +424,39 @@ Item {
       if (root.cliLocked(out, err)) return
 
       // Nothing recognizable came back: the app is not running, or this is a
-      // CLI whose output this parser does not know. Either way the last reading
-      // is not evidence about now, so drop it rather than keep presenting it.
+      // CLI whose output this parser does not know. The last reading is kept
+      // and flagged stale rather than replaced with a blank one, for two
+      // reasons that both bite hardest at exactly this moment.
+      //
+      // `detected` follows the login state, so blanking would take the chip
+      // away while a tunnel is up — and with it the only way to bring that
+      // tunnel down, since every verb here refuses to run undetected. It is the
+      // hazard NetworkManagerBackend keeps its own stale list to avoid.
+      //
+      // And a blank status reports the firewall as off. Losing contact with the
+      // app is precisely when the widget must not start claiming that nothing
+      // is being blocked.
       root._statusFailed = true
-      root.status = Model.parseWindscribeStatus("")
-      root.lastError = Model.elide(err || out || "Could not read Windscribe status", 140)
+      root.lastError = root._statusSeen
+        ? "Windscribe is not answering — showing the last known state."
+        : Model.elide(err || out || "Could not read Windscribe status", 140)
       return
     }
 
     root._statusFailed = false
+    root._statusSeen = true
     root.applyStatus(out)
   }
 
   // "Loaded" means asked and answered. A list this parser cannot read is a
   // reason to say so once, not to re-fetch two hundred lines on every poll for
   // as long as the shell runs.
-  function finishLocations(exitCode, out) {
-    if (exitCode !== 0 || root.cliLocked(out, "")) return
+  function finishLocations(exitCode, out, err) {
+    // A refusal read as an empty list would latch `locationsLoaded` and the
+    // error below for the life of the shell, since nothing re-fetches after a
+    // successful-looking answer. Today's CLI prints the refusal on both
+    // streams; this does not depend on that staying true.
+    if (exitCode !== 0 || root.cliLocked(out, err)) return
 
     root.locations = Model.parseWindscribeLocations(out)
     root.locationsLoaded = true

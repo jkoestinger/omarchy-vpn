@@ -1,5 +1,5 @@
 // Tests for Model.js — the pure half of the widget, where every assumption
-// about how three CLIs format their output is written down.
+// about how four CLIs format their output is written down.
 //
 //   node tests/run.js
 //
@@ -657,6 +657,104 @@ test("windscribeToggleArgs speak the CLI's firewall vocabulary", () => {
   eq(Model.windscribeToggleArgs("firewall", true), ["firewall", "on"])
   eq(Model.windscribeToggleArgs("firewall", false), ["firewall", "off"])
   eq(Model.windscribeToggleArgs("nonsense", true), [])
+})
+
+// A kill switch nobody can read is not a kill switch that is off. The panel's
+// summary reports what the tool said; this weighs what it might be doing, and
+// it is what decides whether switching tools comes with a warning.
+test("windscribeBlocksWhileDown counts an unreadable firewall as maybe blocking", () => {
+  const on = Model.parseWindscribeStatus("Login state: Logged in\nFirewall state: On\nConnect state: Disconnected")
+  const off = Model.parseWindscribeStatus("Login state: Logged in\nFirewall state: Off\nConnect state: Disconnected")
+  const odd = Model.parseWindscribeStatus("Login state: Logged in\nFirewall state: Whatever\nConnect state: Disconnected")
+
+  eq(Model.windscribeBlocksWhileDown(on), true)
+  eq(Model.windscribeBlocksWhileDown(off), false)
+  eq(Model.windscribeBlocksWhileDown(odd), true)
+  // Never asked is not the same as asked and unreadable: with no reading at all
+  // the backend is not detected, and warning about it would be noise.
+  eq(Model.windscribeBlocksWhileDown(Model.parseWindscribeStatus("")), false)
+  eq(Model.windscribeBlocksWhileDown(null), false)
+})
+
+// -------------------------------------------------- Windscribe call queue
+
+const kinds = queue => queue.map(job => job.kind)
+
+test("windscribeEnqueue puts reads at the back and actions at the front", () => {
+  let queue = []
+  queue = Model.windscribeEnqueue(queue, "", "status", ["status"])
+  queue = Model.windscribeEnqueue(queue, "", "locations", ["locations"])
+  eq(kinds(queue), ["status", "locations"])
+
+  queue = Model.windscribeEnqueue(queue, "", "connect", ["connect", "-n", "best"])
+  eq(kinds(queue), ["connect", "status", "locations"])
+  eq(queue[0].args, ["connect", "-n", "best"])
+  eq(queue[0].attempts, 0)
+})
+
+// The poll fires faster than the CLI answers, so without this the queue grows a
+// backlog of stale reads and the panel runs a cycle behind forever.
+test("windscribeEnqueue drops a read that is already queued or running", () => {
+  const queued = Model.windscribeEnqueue([], "", "status", ["status"])
+
+  eq(Model.windscribeEnqueue(queued, "", "status", ["status"]), queued)
+  eq(Model.windscribeEnqueue([], "status", "status", ["status"]), [])
+  eq(Model.windscribeEnqueue([], "locations", "status", ["status"]).length, 1)
+
+  // Actions are not reads: two clicks are two intentions, and the caller — not
+  // the queue — is what decides a second one is redundant.
+  const twice = Model.windscribeEnqueue(
+    Model.windscribeEnqueue([], "", "connect", ["a"]), "", "connect", ["b"])
+  eq(kinds(twice), ["connect", "connect"])
+})
+
+test("windscribeRequeue returns the job to the front, one attempt older", () => {
+  const job = { kind: "status", args: ["status"], attempts: 0 }
+  const queue = Model.windscribeRequeue([{ kind: "locations", args: [], attempts: 0 }], job)
+
+  eq(kinds(queue), ["status", "locations"])
+  eq(queue[0].attempts, 1)
+  // A fresh object: nothing holding the old job sees its count move.
+  eq(job.attempts, 0)
+})
+
+test("windscribeCanRetry stops knocking after four attempts", () => {
+  eq(Model.windscribeCanRetry({ kind: "status", args: [], attempts: 0 }), true)
+  eq(Model.windscribeCanRetry({ kind: "status", args: [], attempts: 3 }), true)
+  eq(Model.windscribeCanRetry({ kind: "status", args: [], attempts: 4 }), false)
+  eq(Model.windscribeCanRetry(null), false)
+})
+
+// Two widget instances lose the lock together and would back off together, so
+// the draw is what separates them — the attempt count is identical on both.
+test("windscribeRetryDelay grows with attempts and spreads with the draw", () => {
+  eq(Model.windscribeRetryDelay(1, 0), 120)
+  eq(Model.windscribeRetryDelay(2, 0), 240)
+  eq(Model.windscribeRetryDelay(1, 1), 400)
+  eq(Model.windscribeRetryDelay(1, 0.5), 260)
+  // A draw outside 0..1, or no draw at all, must not produce a negative or
+  // absurd interval — a Timer given one never fires again.
+  eq(Model.windscribeRetryDelay(1, -5), 120)
+  eq(Model.windscribeRetryDelay(1, 99), 400)
+  eq(Model.windscribeRetryDelay(1, undefined), 120)
+})
+
+test("windscribePending sees both the running job and the waiting ones", () => {
+  const queue = [{ kind: "toggle", args: [], attempts: 0 }]
+
+  eq(Model.windscribePending(queue, "status", ["toggle"]), true)
+  eq(Model.windscribePending(queue, "connect", ["connect", "disconnect"]), true)
+  eq(Model.windscribePending(queue, "status", ["connect", "disconnect"]), false)
+  eq(Model.windscribePending([], "", ["connect"]), false)
+})
+
+// The name is handed to `windscribe-cli connect` as an argument, where a
+// leading dash reads as an option rather than as a place.
+test("windscribeRegions drops a region name that would parse as a flag", () => {
+  const locations = Model.parseWindscribeLocations(
+    "--nope - Somewhere - Trap (10 Gbps)\nSwitzerland - Zurich - Alphorn (10 Gbps)")
+
+  eq(Model.windscribeRegions(locations).map(region => region.name), ["Switzerland"])
 })
 
 // ------------------------------------------------------------------ report

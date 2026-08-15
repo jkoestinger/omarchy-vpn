@@ -167,11 +167,36 @@ treats the refusal as inconclusive rather than as news; the next poll asks again
 The same path covers the user running the CLI at a terminal, which is the case
 that cannot be designed away.
 
-Any *other* unreadable status is the app being gone, and there the last reading is
-dropped rather than left on screen. A stall timer covers the remaining way for
-"one at a time" to fail: a job that never comes back would leave `_running` set,
-and since a read already in flight is never queued twice, the backend would
-quietly stop asking about the tunnel for as long as the shell ran.
+A stall timer covers the remaining way for "one at a time" to fail: a job that
+never comes back would hold the runner slot forever, and since a read already in
+flight is never queued twice, the backend would quietly stop asking about the
+tunnel for as long as the shell ran. It **kills** the process rather than
+forgetting it — a forgotten one still holds the machine-wide lock, blocking every
+other copy of the widget as well as this one, while nothing could start behind
+it. Killing makes `onExited` fire and the usual path does the bookkeeping.
+
+Nothing in the queue waits on a zero-interval timer. `pump` never arranges to be
+called back while a job is on the wire; the running job's `onExited` is what
+pumps. An earlier version re-armed a 0 ms timer there, which turned a hung CLI
+into a shell spinning through its event loop for the length of the hang.
+
+The queue rules themselves — dedupe, front-insertion, bounded retry, backoff —
+live in `Model.js` as a reducer over `(queue, running job)`, because they are
+logic rather than plumbing and they are the part that has been wrong.
+
+**A status that cannot be read is stale, not empty.** The last reading is kept
+and flagged, never replaced with a blank one, and two things hang on that.
+`detected` follows the login state, so blanking would take the chip away while a
+tunnel is up — and with it the only way to bring that tunnel down, since every
+verb refuses to run undetected. That is the hazard NetworkManagerBackend keeps
+its own stale list to avoid. And a blank status reports the firewall as off:
+losing contact with the app is exactly when the widget must not start claiming
+that nothing is being blocked.
+
+For the same reason a firewall line this parser cannot read counts as "might be
+blocking" when the controller weighs whether to warn, even though the summary
+line still reports only what the tool actually said. One weighs a risk, the
+other states a fact.
 
 **Windscribe connects non-blocking.** `connect -n` returns as soon as the daemon
 accepts the request. A blocking call would hold the CLI lock — and with it every
