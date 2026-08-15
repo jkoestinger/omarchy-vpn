@@ -1,0 +1,70 @@
+name: release-please
+
+# Runs on dev, not main. Release-please opens its version-bump PR into dev; once
+# that lands it tags the release. The dev -> main PR that follows then carries
+# code, changelog and version onto the distribution branch together, so main is
+# never briefly serving new code under the previous version number.
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          # A PAT, not GITHUB_TOKEN: pull requests opened by GITHUB_TOKEN do not
+          # trigger workflows, so the required `model` check would never report
+          # and the release PR could never be merged.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          target-branch: dev
+          config-file: release-please-config.json
+          # The config says `release-type: go`, which is a misnomer here. It is
+          # the one strategy that writes no version file of its own unless you
+          # ask for one, so manifest.json stays the only place a version lives.
+          # `simple` would drop a redundant version.txt into the plugin.
+          manifest-file: .release-please-manifest.json
+
+  # Only after a release is actually cut, so ordinary pushes to dev do not open
+  # a promotion PR. Merging this one is what distributes the release.
+  promote:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Open the dev -> main promotion PR
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+
+          # dev is long-lived, so an unmerged promotion PR from a previous
+          # release may still be open. Retarget rather than fail.
+          existing=$(gh pr list --base main --head dev --state open \
+            --json number --jq '.[0].number // empty')
+
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --title "release: $TAG"
+            echo "Reused PR #$existing for $TAG"
+            exit 0
+          fi
+
+          gh pr create --base main --head dev \
+            --title "release: $TAG" \
+            --body "Promotes \`dev\` to \`main\` for **$TAG**.
+
+          \`main\` is the distribution branch, so merging this ships the release.
+          Release notes: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
