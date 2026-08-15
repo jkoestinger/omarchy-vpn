@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell.Io
-import "Model.js" as Model
+import "model/Shared.js" as Shared
+import "model/NetworkManager.js" as NetworkManager
 
 // NetworkManager backend: every tunnel NetworkManager owns, which on a desktop
 // means OpenVPN and WireGuard. Neither has a session daemon of its own to ask —
@@ -15,7 +16,10 @@ Item {
 
   readonly property string backendId: "networkmanager"
   readonly property string label: "NetworkManager"
-  readonly property string glyph: Model.GLYPH_VPN
+  // Two names, because this backend is the only way to reach either protocol
+  // and the label names the manager rather than anything you would install.
+  readonly property var installNames: ["OpenVPN", "WireGuard"]
+  readonly property string glyph: Shared.GLYPH_VPN
   readonly property bool supportsFilter: false
   readonly property string filterPlaceholder: ""
 
@@ -52,16 +56,16 @@ Item {
   // `nmcli --ask` can collect the credentials itself.
   signal authRequired(string command)
 
-  readonly property bool _activeNow: Model.activeNmProfile(profiles) !== null
+  readonly property bool _activeNow: NetworkManager.activeNmProfile(profiles) !== null
   readonly property bool connected: _desired === -1 ? _activeNow : (_desired === 1)
   readonly property bool _working: connectProcess.running || chainTimer.running || _stage !== ""
   readonly property bool busy: _working || listProcess.running || typesProcess.running
-  readonly property string summary: Model.nmSummary(profiles)
-  readonly property var details: Model.nmDetails(profiles)
-  readonly property var targets: Model.nmTargets(profiles)
+  readonly property string summary: NetworkManager.nmSummary(profiles)
+  readonly property var details: NetworkManager.nmDetails(profiles)
+  readonly property var targets: NetworkManager.nmTargets(profiles)
   readonly property string emptyText: "No profiles yet. Import one with: nmcli connection import type openvpn file <config.ovpn> — or type wireguard file <config.conf>"
   readonly property string currentKey: {
-    var profile = Model.activeNmProfile(profiles)
+    var profile = NetworkManager.activeNmProfile(profiles)
     return profile ? "profile:" + profile.uuid : ""
   }
 
@@ -122,7 +126,7 @@ Item {
     // NetworkManager will happily run two tunnels at once, and picking one
     // profile is never a request for both. The controller only enforces this
     // between backends, so the profiles inside this one take each other down.
-    var active = Model.activeNmProfile(profiles)
+    var active = NetworkManager.activeNmProfile(profiles)
     if (active && active.uuid !== target.uuid) {
       _stage = "handover"
       connectProcess.command = ["nmcli", "connection", "down", "uuid", active.uuid]
@@ -151,7 +155,7 @@ Item {
   function disconnect() {
     if (!detected || _working) return
 
-    var active = Model.activeNmProfile(profiles)
+    var active = NetworkManager.activeNmProfile(profiles)
     if (!active) return
 
     _desired = 0
@@ -187,7 +191,7 @@ Item {
     }
 
     root.profiles = eligible
-    if (_desired !== -1 && (Model.activeNmProfile(eligible) !== null) === (_desired === 1)) _desired = -1
+    if (_desired !== -1 && (NetworkManager.activeNmProfile(eligible) !== null) === (_desired === 1)) _desired = -1
   }
 
   Timer {
@@ -298,12 +302,12 @@ Item {
           listRetry.restart()
           return
         }
-        root.lastError = Model.elide(failure || "Could not list NetworkManager connections", 140)
+        root.lastError = Shared.elide(failure || "Could not list NetworkManager connections", 140)
         return
       }
 
       root.lastError = ""
-      listProcess.pending = Model.parseNmcliConnections(String(listStdout.text || ""))
+      listProcess.pending = NetworkManager.parseNmcliConnections(String(listStdout.text || ""))
       if (listProcess.pending.length === 0) {
         root.applyProfiles([])
         return
@@ -344,12 +348,12 @@ Item {
       // while a tunnel is up, and with it the only way to bring that tunnel
       // down — disconnect() refuses to run undetected.
       if (exitCode !== 0) {
-        root.lastError = Model.elide(
+        root.lastError = Shared.elide(
           String(typesStderr.text || "") || "Could not read NetworkManager profile details", 140)
         return
       }
 
-      var details = Model.parseNmcliVpnDetails(String(typesStdout.text || ""))
+      var details = NetworkManager.parseNmcliVpnDetails(String(typesStdout.text || ""))
       var usable = []
       for (var i = 0; i < listProcess.pending.length; i++) {
         var candidate = listProcess.pending[i]
@@ -363,7 +367,7 @@ Item {
         }
 
         var detail = details[candidate.uuid]
-        if (!detail || !Model.isOpenVpnService(detail.serviceType)) continue
+        if (!detail || !NetworkManager.isOpenVpnService(detail.serviceType)) continue
 
         candidate.hasUsername = detail.hasUsername
         usable.push(candidate)
@@ -398,7 +402,7 @@ Item {
           root.lastError = "This profile needs credentials — opening a terminal to enter them."
           root.authRequired("nmcli --ask connection up uuid " + target.uuid)
         } else {
-          root.lastError = Model.elide(output.trim() || "nmcli command failed", 140)
+          root.lastError = Shared.elide(output.trim() || "nmcli command failed", 140)
         }
       } else {
         root.lastError = ""

@@ -1,8 +1,10 @@
 # Architecture
 
 The panel knows nothing about any particular VPN tool. It renders whatever the
-active backend exposes, and the controller decides which backend that is. Adding
-a tool means writing one file and adding one line.
+active backend exposes, and the controller decides which backend that is. A tool
+is two files of its own plus two lines in the controller — see [Adding a
+backend](#adding-a-backend), and [CONTRIBUTING.md](CONTRIBUTING.md) for the
+surrounding workflow.
 
 ## Files
 
@@ -15,7 +17,17 @@ a tool means writing one file and adding one line.
 | `MullvadBackend.qml` | Mullvad, via the `mullvad` CLI |
 | `WindscribeBackend.qml` | Windscribe, via `windscribe-cli` |
 | `NetworkManagerBackend.qml` | OpenVPN and WireGuard, via NetworkManager |
-| `Model.js` | Pure parsing and row-building. No QML, no side effects |
+| `model/Shared.js` | Helpers every backend leans on, and the widget's own settings |
+| `model/Proton.js`, `model/Mullvad.js`, `model/Windscribe.js`, `model/NetworkManager.js` | Pure parsing and row-building, one file per tool. No QML, no side effects |
+
+Each backend is a pair: the `.qml` file holds the `Process` plumbing, and the
+matching `model/*.js` holds everything that can be decided without running a
+command. The split is what makes the interesting half testable, so a backend
+that puts its parsing in the QML file has given that up.
+
+`model/*.js` files are QML `.pragma library` scripts. A backend's model imports
+the shared helpers with `.import "Shared.js" as Shared` and imports nothing
+else — no model file may reach into another tool's.
 
 ## The backend contract
 
@@ -27,7 +39,8 @@ duck-types, so a backend that omits something simply renders as blank.
 | Property | Meaning |
 |----------|---------|
 | `backendId` | Stable key used by settings and IPC (`proton`, `mullvad`, `windscribe`, `networkmanager`) |
-| `label` | Name on the switcher chip and hero |
+| `label` | Name on the switcher chip and hero. Also what `preferredBackend` stores, so it must match that enum in `manifest.json` exactly |
+| `installNames` | What a user would install to make this backend useful, as a list. The panel joins them into its "install something" line when no tool is detected. Usually one name and the same as `label` — NetworkManager is the exception, offering `["OpenVPN", "WireGuard"]`, because nobody installs a connection manager to get a VPN |
 | `glyph` | Nerd Font character for the hero icon |
 | `supportsFilter`, `filterPlaceholder` | Whether the panel shows its filter field |
 | `filter` | The panel writes the current filter text here |
@@ -74,12 +87,29 @@ is installed and merely has nothing to connect to yet.
 
 ## Adding a backend
 
-1. Write `WireGuardBackend.qml` implementing the contract above.
-2. Add it to `VpnController.backends` and instantiate it alongside the others.
+Say the tool is called Tunnelbear.
 
-That is the whole integration. The chips, hero, detail rows, target list,
-keyboard navigation, exclusivity, and public-IP refresh all follow from the
-contract.
+1. `model/Tunnelbear.js` — the parsing and the row-building. Start with
+   `.pragma library` and `.import "Shared.js" as Shared`.
+2. `tests/model/tunnelbear.test.js` — the suite picks it up by filename, so
+   nothing else needs editing to run it.
+3. `TunnelbearBackend.qml` — the `Process` plumbing, implementing the contract
+   above. It imports `model/Shared.js` and `model/Tunnelbear.js`, and no other
+   backend's model.
+4. `VpnController.qml` — add it to the `backends` list, and instantiate it
+   alongside the others. Two lines, next to each other.
+5. `manifest.json` — add the `label` to the `preferredBackend` enum.
+
+Step 5 is the one that cannot be derived: that enum is static JSON, read by
+Omarchy's settings dialog before any QML runs, so nothing at runtime can fill it
+in. Everything else about the tool is discovered from the backend itself — the
+chips, hero, detail rows, target list, keyboard navigation, exclusivity, the
+public-IP refresh, the `preferredBackend` mapping, and the panel's line naming
+what a user could install.
+
+Anything you find yourself adding to `Panel.qml` or `model/Shared.js` to make
+one tool work is worth a second look: the contract is meant to absorb that, and
+if it cannot, the contract is what should change.
 
 ## Design notes
 
@@ -181,8 +211,8 @@ pumps. An earlier version re-armed a 0 ms timer there, which turned a hung CLI
 into a shell spinning through its event loop for the length of the hang.
 
 The queue rules themselves — dedupe, front-insertion, bounded retry, backoff —
-live in `Model.js` as a reducer over `(queue, running job)`, because they are
-logic rather than plumbing and they are the part that has been wrong.
+live in `model/Windscribe.js` as a reducer over `(queue, running job)`, because
+they are logic rather than plumbing and they are the part that has been wrong.
 
 **A status that cannot be read is stale, not empty.** The last reading is kept
 and flagged, never replaced with a blank one, and two things hang on that.
@@ -316,8 +346,8 @@ in QML.
 ## Working on it
 
 Files under `~/.config/omarchy/plugins/` hot-reload on save — QML files, that
-is. Changes to `Model.js` do **not** take effect until the shell restarts, since
-a `.pragma library` script stays cached:
+is. Changes under `model/` do **not** take effect until the shell restarts,
+since a `.pragma library` script stays cached:
 
 ```bash
 omarchy restart shell
@@ -347,9 +377,9 @@ Check a manifest change with `omarchy plugin validate .` before committing.
 
 ## Tests
 
-`Model.js` is where every assumption about how four CLIs format their output
-lives, and it is the one file that runs without a QML engine. The suite covers
-it:
+The `model/` files are where every assumption about how four CLIs format their
+output lives, and they are the only half of the widget that runs without a QML
+engine. The suite covers them:
 
 ```bash
 node tests/run.js
@@ -363,11 +393,16 @@ crash with exit 255 and no message. A batch invocation adds the same directory
 for the same reason. Neither is a defect in the file being checked.
 
 No framework and no `package.json` — a suite that needed installing would not
-get run, and the plugin is not built. `tests/run.js` evaluates `Model.js` in the
-node realm and collects the names it declares, since a `.pragma library` has no
-exports. CI runs the same command on push and pull request.
+get run, and the plugin is not built. `tests/harness.js` strips the `.pragma`
+and `.import` lines, which are not JavaScript, evaluates each model file in the
+node realm, and collects the names it declares, since a `.pragma library` has no
+exports. `Shared.js` is loaded first and bound to a global of that name, which
+is what the `.import` line resolves to inside the QML engine; that is the whole
+of the emulation. `tests/run.js` then runs every `tests/model/*.test.js` it
+finds, so a new backend's tests are picked up by dropping the file in. CI runs
+the same command on push and pull request.
 
 The QML halves are not covered: they are `Process` plumbing and bindings, and
-the interesting logic was pushed into `Model.js` precisely so it could be
-tested. When a bug turns out to live in a parser, the fix belongs there with a
-case beside it.
+the interesting logic was pushed into `model/` precisely so it could be tested.
+When a bug turns out to live in a parser, the fix belongs there with a case
+beside it.

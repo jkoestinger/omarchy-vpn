@@ -5,7 +5,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
-import "Model.js" as Model
+import "model/Shared.js" as Shared
 
 Panel {
   id: root
@@ -65,14 +65,24 @@ Panel {
   // report that it is under way.
   readonly property bool statusIsError: vpn.notice !== ""
     || (backend !== null && backend.lastError !== "" && backend.actionStatus === "")
+  // Assembled from the backends rather than written out, because a sentence
+  // listing supported tools is exactly the kind that stops being true quietly:
+  // this one went a release without naming Windscribe.
+  readonly property string installHint: {
+    var names = []
+    for (var i = 0; i < vpn.backends.length; i++) {
+      var offered = vpn.backends[i].installNames || []
+      for (var j = 0; j < offered.length; j++) names.push(offered[j])
+    }
+    var list = Shared.sentenceList(names)
+    return list === "" ? "" : "Install " + list + " to use this widget."
+  }
   readonly property string statusLine: {
     if (providersOpen) return ""
     if (vpn.notice !== "") return vpn.notice
     if (!backend) {
       if (vpn.detectedBackends.length > 0) return "Every VPN tool is hidden. Turn one back on with the gear."
-      return vpn.setupHint !== ""
-        ? vpn.setupHint
-        : "Install Proton VPN, Mullvad, OpenVPN, or WireGuard to use this widget."
+      return vpn.setupHint !== "" ? vpn.setupHint : root.installHint
     }
     return backend.actionStatus !== "" ? backend.actionStatus : backend.lastError
   }
@@ -260,8 +270,8 @@ Panel {
 
   function toggleProvider(row) {
     if (!row || row.backendId === undefined) return
-    var next = Model.toggleBackendId(vpn.hiddenBackendIds, row.backendId)
-    saveSetting("hiddenBackends", Model.joinBackendIds(next))
+    var next = Shared.toggleBackendId(vpn.hiddenBackendIds, row.backendId)
+    saveSetting("hiddenBackends", Shared.joinBackendIds(next))
   }
 
   // Widget settings live in this widget's shell.json entry, the same place the
@@ -440,7 +450,7 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: Model.GLYPH_VPN
+    text: Shared.GLYPH_VPN
     dimmed: !vpn.anyConnected
     tooltipText: "VPN: " + vpn.barSummary
     onPressed: function(buttonCode) {
@@ -566,7 +576,7 @@ Panel {
               anchors.right: masterSwitch.visible ? masterSwitch.left : parent.right
               anchors.rightMargin: masterSwitch.visible ? Style.space(8) : 0
               anchors.verticalCenter: parent.verticalCenter
-              iconText: Model.GLYPH_COG
+              iconText: Shared.GLYPH_COG
               tooltipText: root.providersOpen ? "Back" : "Widget settings"
               hasCursor: root.gearHasCursor
               foreground: root.foreground
@@ -642,7 +652,7 @@ Panel {
               iconOpacity: vpn.anyConnected ? 1.0 : 0.5
               iconComponent: Component {
                 Text {
-                  text: root.backend ? root.backend.glyph : Model.GLYPH_VPN
+                  text: root.backend ? root.backend.glyph : Shared.GLYPH_VPN
                   color: vpn.anyConnected ? root.foreground : root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.display
@@ -651,7 +661,7 @@ Panel {
               trailingControl: Component {
                 Text {
                   visible: root.settingsAvailable
-                  text: root.settingsExpanded ? Model.GLYPH_CHEVRON_UP : Model.GLYPH_CHEVRON_DOWN
+                  text: root.settingsExpanded ? Shared.GLYPH_CHEVRON_UP : Shared.GLYPH_CHEVRON_DOWN
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.icon
@@ -872,7 +882,7 @@ Panel {
 
       Text {
         visible: targetRow.isCurrent
-        text: Model.GLYPH_CHECK
+        text: Shared.GLYPH_CHECK
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.icon

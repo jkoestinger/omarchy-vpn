@@ -266,8 +266,10 @@ omarchy-shell jkoestinger.vpn toggle       # open or close the panel
 
 ## Contributing
 
-Adding support for another VPN tool means writing one file. See
-[ARCHITECTURE.md](ARCHITECTURE.md).
+Adding support for another VPN tool means two files of its own and two lines in
+the controller. [CONTRIBUTING.md](CONTRIBUTING.md) covers how to run, test and
+debug the widget; [ARCHITECTURE.md](ARCHITECTURE.md) covers how it is put
+together and why.
 
 ## License
 

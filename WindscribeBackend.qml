@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell.Io
-import "Model.js" as Model
+import "model/Shared.js" as Shared
+import "model/Windscribe.js" as Windscribe
 
 // Windscribe backend, driven by the `windscribe-cli` client talking to the
 // Windscribe desktop app. Implements the backend contract documented in
@@ -27,12 +28,13 @@ Item {
 
   readonly property string backendId: "windscribe"
   readonly property string label: "Windscribe"
-  readonly property string glyph: Model.GLYPH_VPN
+  readonly property var installNames: ["Windscribe"]
+  readonly property string glyph: Shared.GLYPH_VPN
   readonly property bool supportsFilter: true
   // Cities and server nicknames match too, but the field is only so wide.
   readonly property string filterPlaceholder: "Filter locations — press / to search"
 
-  property var status: Model.parseWindscribeStatus("")
+  property var status: Windscribe.parseWindscribeStatus("")
   property var locations: []
   property bool locationsLoaded: false
   property string actionStatus: ""
@@ -64,12 +66,12 @@ Item {
   // down, nothing leaves the machine at all — including the traffic another
   // backend's connect needs. An unreadable firewall line counts as "might be" —
   // see windscribeBlocksWhileDown.
-  readonly property bool lockdownMode: detected && !connected && Model.windscribeBlocksWhileDown(status)
+  readonly property bool lockdownMode: detected && !connected && Windscribe.windscribeBlocksWhileDown(status)
   readonly property string lockdownHint: "windscribe-cli firewall off"
 
   // The one setting the CLI can change. Its value is always what the app last
   // reported; the widget stores no copy.
-  readonly property var toggles: Model.applyPendingToggles(Model.windscribeToggles(status), _pendingToggles)
+  readonly property var toggles: Shared.applyPendingToggles(Windscribe.windscribeToggles(status), _pendingToggles)
   property var _pendingToggles: ({})
   // Which switch is in flight, so a refusal rolls back the right one.
   property string _toggleKey: ""
@@ -80,16 +82,16 @@ Item {
 
   readonly property bool connected: _desired === -1 ? status.connected : (_desired === 1)
   readonly property bool busy: _running !== "" || _queue.length > 0
-  readonly property string summary: Model.windscribeSummary(status)
-  readonly property var details: Model.windscribeDetails(status)
-  readonly property var regions: Model.windscribeRegions(locations)
-  readonly property var favorites: Model.favoriteCodes(setting("favoriteCountries", "CH,NL,US"))
+  readonly property string summary: Windscribe.windscribeSummary(status)
+  readonly property var details: Windscribe.windscribeDetails(status)
+  readonly property var regions: Windscribe.windscribeRegions(locations)
+  readonly property var favorites: Shared.favoriteCodes(setting("favoriteCountries", "CH,NL,US"))
   readonly property string emptyText: locationsLoaded ? "No locations match." : "Loading locations…"
-  readonly property string currentKey: Model.windscribeCurrentKey(status, regions)
+  readonly property string currentKey: Windscribe.windscribeCurrentKey(status, regions)
   readonly property var targets: filter === ""
-    ? Model.windscribeQuickTargets(Model.windscribeBestNickname(locations))
-        .concat(Model.windscribeRegionTargets(regions, favorites, ""))
-    : Model.windscribeRegionTargets(regions, favorites, filter)
+    ? Windscribe.windscribeQuickTargets(Windscribe.windscribeBestNickname(locations))
+        .concat(Windscribe.windscribeRegionTargets(regions, favorites, ""))
+    : Windscribe.windscribeRegionTargets(regions, favorites, filter)
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -116,21 +118,21 @@ Item {
   property var _current: null
   readonly property string _running: _current ? _current.kind : ""
 
-  readonly property bool _actionPending: Model.windscribePending(_queue, _running, ["connect", "disconnect"])
-  readonly property bool _togglePending: Model.windscribePending(_queue, _running, ["toggle"])
+  readonly property bool _actionPending: Windscribe.windscribePending(_queue, _running, ["connect", "disconnect"])
+  readonly property bool _togglePending: Windscribe.windscribePending(_queue, _running, ["toggle"])
 
   function enqueue(kind, args) {
-    var queue = Model.windscribeEnqueue(_queue, _running, kind, args)
+    var queue = Windscribe.windscribeEnqueue(_queue, _running, kind, args)
     if (queue === _queue) return
     _queue = queue
     pump()
   }
 
   function retry(job) {
-    if (!Model.windscribeCanRetry(job)) return false
+    if (!Windscribe.windscribeCanRetry(job)) return false
 
-    _queue = Model.windscribeRequeue(_queue, job)
-    retryTimer.interval = Model.windscribeRetryDelay(job.attempts + 1, Math.random())
+    _queue = Windscribe.windscribeRequeue(_queue, job)
+    retryTimer.interval = Windscribe.windscribeRetryDelay(job.attempts + 1, Math.random())
     retryTimer.restart()
     return true
   }
@@ -229,7 +231,7 @@ Item {
   function setToggle(key, value) {
     if (!detected || _togglePending) return
 
-    var args = Model.windscribeToggleArgs(key, value)
+    var args = Windscribe.windscribeToggleArgs(key, value)
     if (args.length === 0) return
 
     var pending = {}
@@ -293,7 +295,7 @@ Item {
   // ------------------------------------------------------------- the state
 
   function applyStatus(raw) {
-    var parsed = Model.parseWindscribeStatus(raw)
+    var parsed = Windscribe.parseWindscribeStatus(raw)
     root.status = parsed
 
     // An accepted-then-failed connect is reported nowhere but here, so the
@@ -306,7 +308,7 @@ Item {
     // The CLI's error state is sticky — it stands until the next successful
     // connect — so this both raises the failure and clears it, rather than
     // only ever raising it.
-    root.lastError = parsed.error !== "" ? Model.elide(parsed.error, 140) : ""
+    root.lastError = parsed.error !== "" ? Shared.elide(parsed.error, 140) : ""
 
     root.reconcileToggles(parsed)
     root.loadLocations()
@@ -315,7 +317,7 @@ Item {
   // Drop the optimistic value only for the keys the app has since agreed with,
   // so a poll landing mid-flight cannot flick another switch back.
   function reconcileToggles(parsed) {
-    var current = Model.windscribeToggles(parsed)
+    var current = Windscribe.windscribeToggles(parsed)
     var pending = {}
     var changed = false
 
@@ -414,11 +416,11 @@ Item {
   // Something else is holding the CLI lock. The call did no work and returned
   // no state, so nothing is concluded from it; the next poll asks again.
   function cliLocked(out, err) {
-    return Model.isWindscribeCliLocked(out) || Model.isWindscribeCliLocked(err)
+    return Windscribe.isWindscribeCliLocked(out) || Windscribe.isWindscribeCliLocked(err)
   }
 
   function finishStatus(exitCode, out, err) {
-    var parsed = Model.parseWindscribeStatus(out)
+    var parsed = Windscribe.parseWindscribeStatus(out)
 
     if (exitCode !== 0 || !parsed.loaded) {
       if (root.cliLocked(out, err)) return
@@ -439,7 +441,7 @@ Item {
       root._statusFailed = true
       root.lastError = root._statusSeen
         ? "Windscribe is not answering — showing the last known state."
-        : Model.elide(err || out || "Could not read Windscribe status", 140)
+        : Shared.elide(err || out || "Could not read Windscribe status", 140)
       return
     }
 
@@ -458,7 +460,7 @@ Item {
     // streams; this does not depend on that staying true.
     if (exitCode !== 0 || root.cliLocked(out, err)) return
 
-    root.locations = Model.parseWindscribeLocations(out)
+    root.locations = Windscribe.parseWindscribeLocations(out)
     root.locationsLoaded = true
     if (root.locations.length === 0) {
       root.lastError = "Could not read the location list. Check: windscribe-cli locations"
@@ -472,7 +474,7 @@ Item {
     // later, which is what the settle timer is watching for.
     if (exitCode !== 0 || root.cliLocked(out, err)) {
       root._desired = -1
-      root.lastError = Model.elide(err || out || "Windscribe command failed", 140)
+      root.lastError = Shared.elide(err || out || "Windscribe command failed", 140)
     }
     root.actionStatus = ""
     settleTimer.ticks = 0
@@ -482,7 +484,7 @@ Item {
 
   function finishToggle(exitCode, out, err) {
     if (exitCode !== 0 || root.cliLocked(out, err)) {
-      root.lastError = Model.elide(err || out || "Windscribe refused that setting", 140)
+      root.lastError = Shared.elide(err || out || "Windscribe refused that setting", 140)
       root.clearPending(root._toggleKey)
     }
     root._toggleKey = ""
