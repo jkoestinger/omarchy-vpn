@@ -22,7 +22,6 @@ function parseProtonStatus(raw) {
     city: "",
     load: "",
     protocol: "",
-    ip: "",
     statusText: ""
   }
 
@@ -59,8 +58,6 @@ function parseProtonStatus(raw) {
       result.load = value
     } else if (key === "protocol") {
       result.protocol = value
-    } else if (key === "ip" || key === "ip address") {
-      result.ip = value
     }
   }
 

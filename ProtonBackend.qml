@@ -163,8 +163,7 @@ Item {
   // A command that exits clean but does not take — the CLI accepts it and then
   // lists the old value — would otherwise leave the switch showing the position
   // the user asked for, marked busy, for as long as the panel is open. Optimism
-  // gets a deadline: past it, the switches go back to what the CLI actually
-  // says, which is the whole point of not storing them here.
+  // gets a deadline.
   Timer {
     id: pendingTimer
     interval: 10000

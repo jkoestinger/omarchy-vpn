@@ -207,8 +207,7 @@ Item {
   // A command that exits clean but does not take — the daemon accepts it and
   // then reports the old value — would otherwise leave the switch showing the
   // position the user asked for, marked busy, for as long as the panel is open.
-  // Optimism gets a deadline: past it, the switches go back to what the daemon
-  // actually says, which is the whole point of not storing them here.
+  // Optimism gets a deadline.
   Timer {
     id: pendingTimer
     interval: 10000
@@ -247,13 +246,6 @@ Item {
     interval: 0
     repeat: false
     onTriggered: root.runStage("connect", ["connect"])
-  }
-
-  Timer {
-    id: actionStatusTimer
-    interval: 2600
-    repeat: false
-    onTriggered: root.actionStatus = ""
   }
 
   Process {

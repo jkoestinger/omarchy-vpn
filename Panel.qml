@@ -235,8 +235,7 @@ Panel {
   function toggleSettings() {
     if (!settingsAvailable) return
     settingsExpanded = !settingsExpanded
-    if (!settingsExpanded && focusSection === "toggles") setHeroCursor()
-    else if (settingsExpanded) setHeroCursor()
+    if (settingsExpanded || focusSection === "toggles") setHeroCursor()
   }
 
   // The gear and the provider rows work without a backend — they are how you
@@ -893,9 +892,8 @@ Panel {
         visible: targetRow.isProvider
         checked: targetRow.isProvider && !targetRow.row.hidden
         foreground: root.foreground
-        // Same reason the tool settings do it: the row owns the click and the
-        // cursor ring, so a switch that owned them too would read as a second
-        // target inside the first.
+        // The row owns the click and the cursor ring; a switch that owned them
+        // too would read as a second target inside the first.
         interactive: false
         Layout.alignment: Qt.AlignVCenter
       }
@@ -957,8 +955,7 @@ Panel {
         checked: toggleRow.entry ? toggleRow.entry.value : false
         busy: toggleRow.entry ? toggleRow.entry.busy === true : false
         foreground: root.foreground
-        // The row owns the click and the cursor ring; a switch that owned them
-        // too would read as a second target inside the first.
+        // Same reason the provider rows do it.
         interactive: false
         Layout.alignment: Qt.AlignVCenter
       }
