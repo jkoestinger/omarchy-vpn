@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Windscribe**, via `windscribe-cli`. Best location followed by every region
+  Windscribe serves, with cities and server nicknames searchable; the firewall
+  as a switch in the tool drawer; and the data allowance on the detail rows,
+  since a free plan is metered and the CLI prints the number nowhere else.
+  Regions holding nothing a free account can reach are marked **Pro only**,
+  because the CLI's own refusal — `Location does not exist or is disabled` —
+  does not say which of the two it meant.
+
+  The chip appears only once the Windscribe app is running and logged in:
+  `windscribe-cli` is a client, and a client on its own has nothing to offer.
+  The panel says which half is missing.
+
+  `windscribe-cli` also refuses to run while another copy of itself is running,
+  and each bar instantiates the widget separately — so on a multi-monitor
+  desktop the copies collide with each other. Calls are serialised per instance
+  and retried when they lose the race, rather than being read as an answer.
+
+  A status the widget cannot read leaves the last reading on screen, flagged as
+  stale. Blanking it would drop the chip while a tunnel was up — taking the only
+  way to bring that tunnel down with it — and would report the firewall as off
+  at the one moment the widget has no idea whether traffic is flowing.
+
+  Closes #10.
+
+### Changed
+
+- The warning shown before one tool's kill switch is torn down for another now
+  names that tool's own command. It was written in Mullvad's vocabulary, which
+  was the wrong advice on any other chip.
+
 ## 1.1.0
 
 ### Added

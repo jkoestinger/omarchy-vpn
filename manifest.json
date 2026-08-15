@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "VPN",
-    "description": "Detects installed VPN tools (Proton VPN, Mullvad, and NetworkManager's OpenVPN and WireGuard profiles) and switches between them from one bar icon.",
+    "description": "Detects installed VPN tools (Proton VPN, Mullvad, Windscribe, and NetworkManager's OpenVPN and WireGuard profiles) and switches between them from one bar icon.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",
@@ -38,7 +38,7 @@
         "key": "preferredBackend",
         "type": "enum",
         "label": "VPN tool shown first",
-        "options": ["Auto", "Proton VPN", "Mullvad", "NetworkManager"],
+        "options": ["Auto", "Proton VPN", "Mullvad", "Windscribe", "NetworkManager"],
         "defaultValue": "Auto",
         "description": "Auto picks whichever detected tool is connected, otherwise the first one found."
       },
@@ -46,14 +46,15 @@
         "key": "favoriteCountries",
         "type": "string",
         "label": "Favorite countries (comma separated)",
-        "defaultValue": "CH,NL,US"
+        "defaultValue": "CH,NL,US",
+        "description": "Two-letter codes for Proton VPN and Mullvad. Windscribe names its regions instead, so it matches full names (\"Switzerland\") and leading words (\"US\" picks up US East, US Central and US West)."
       },
       {
         "key": "hiddenBackends",
         "type": "string",
         "label": "Hidden VPN tools (comma separated)",
         "defaultValue": "",
-        "description": "Tools the widget ignores entirely: proton, mullvad, networkmanager. Also editable from the gear inside the panel."
+        "description": "Tools the widget ignores entirely: proton, mullvad, windscribe, networkmanager. Also editable from the gear inside the panel."
       }
     ]
   }
