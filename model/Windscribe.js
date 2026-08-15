@@ -22,8 +22,6 @@ function parseWindscribeStatus(raw) {
   var result = {
     loaded: false,
     loggedIn: false,
-    loginText: "",
-    online: true,
     firewallKnown: false,
     firewallOn: false,
     firewallAlways: false,
@@ -54,11 +52,8 @@ function parseWindscribeStatus(raw) {
     if (value === "") continue
 
     if (key === "login state") {
-      result.loginText = value
       result.loggedIn = /^logged in/i.test(value)
       result.loaded = true
-    } else if (key === "internet connectivity") {
-      result.online = !/^no|^unavailable|^not available/i.test(value)
     } else if (key === "firewall state") {
       // Three spellings, and only the two known ones are believed: reporting a
       // kill switch as off while it is on is the one mistake worth ruling out.

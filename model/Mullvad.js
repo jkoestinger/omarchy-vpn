@@ -16,7 +16,6 @@ function parseMullvadStatus(raw) {
     relay: "",
     country: "",
     city: "",
-    ip: "",
     endpoint: "",
     protocol: "",
     tunnelInterface: "",
@@ -47,7 +46,6 @@ function parseMullvadStatus(raw) {
       result.relay = String(location.hostname || "")
       result.country = String(location.country || "")
       result.city = String(location.city || "")
-      result.ip = String(location.ipv4 || location.ipv6 || "")
     }
 
     var endpoint = details.endpoint
