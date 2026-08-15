@@ -36,6 +36,7 @@ Item {
   readonly property bool lockdownMode: daemonSettings.seen !== undefined
     && daemonSettings.seen.lockdown === true
     && daemonSettings.lockdown
+  readonly property string lockdownHint: "mullvad lockdown-mode set off"
 
   // Switches the panel draws under the detail rows. Values are whatever the
   // daemon last reported; the widget stores none of them.

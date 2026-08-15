@@ -1,0 +1,489 @@
+import QtQuick
+import Quickshell.Io
+import "Model.js" as Model
+
+// Windscribe backend, driven by the `windscribe-cli` client talking to the
+// Windscribe desktop app. Implements the backend contract documented in
+// VpnController.qml.
+//
+// Three things make this one different from the other backends.
+//
+// The CLI takes a global lock, so no two invocations may overlap — every call
+// goes through one queue and one process. See enqueue().
+//
+// Being installed is not being usable: the CLI is a client for an app you have
+// to be logged into, so `detected` waits on the login state and not on the
+// binary.
+//
+// And `connect` is run non-blocking, so it exits 0 the moment the request is
+// accepted. The outcome arrives later, in the status line, and until it does a
+// failure looks exactly like a success.
+Item {
+  id: root
+  visible: false
+
+  property var settings: ({})
+  property string filter: ""
+
+  readonly property string backendId: "windscribe"
+  readonly property string label: "Windscribe"
+  readonly property string glyph: Model.GLYPH_VPN
+  readonly property bool supportsFilter: true
+  // Cities and server nicknames match too, but the field is only so wide.
+  readonly property string filterPlaceholder: "Filter locations — press / to search"
+
+  property var status: Model.parseWindscribeStatus("")
+  property var locations: []
+  property bool locationsLoaded: false
+  property string actionStatus: ""
+  property string lastError: ""
+
+  property bool _present: false
+  property bool _probed: false
+  // The app is not answering — installed, but nothing behind the socket.
+  property bool _statusFailed: false
+
+  // The binary alone says nothing: `windscribe-cli` is a client, and a client
+  // nobody is logged into has no locations to offer and cannot connect. The
+  // panel would otherwise draw a chip leading to an empty list.
+  readonly property bool detected: _present && status.loggedIn
+
+  readonly property string setupHint: {
+    if (!_present) return ""
+    if (_statusFailed) return "Windscribe is installed but its app is not answering. Start Windscribe, then reopen this panel."
+    if (status.loaded && !status.loggedIn) return "Windscribe is installed but not logged in. Log in with: windscribe-cli login"
+    return ""
+  }
+
+  // Windscribe's firewall is a kill switch: while it is on and the tunnel is
+  // down, nothing leaves the machine at all — including the traffic another
+  // backend's connect needs.
+  readonly property bool lockdownMode: detected && status.firewallOn && !connected
+  readonly property string lockdownHint: "windscribe-cli firewall off"
+
+  // The one setting the CLI can change. Its value is always what the app last
+  // reported; the widget stores no copy.
+  readonly property var toggles: Model.applyPendingToggles(Model.windscribeToggles(status), _pendingToggles)
+  property var _pendingToggles: ({})
+  // Which switch is in flight, so a refusal rolls back the right one.
+  property string _toggleKey: ""
+
+  // Optimistic connection state so the switch flips the instant you click it.
+  // -1 follows the app, 0/1 while a connect/disconnect is still in flight.
+  property int _desired: -1
+
+  readonly property bool connected: _desired === -1 ? status.connected : (_desired === 1)
+  readonly property bool busy: _running !== "" || _queue.length > 0
+  readonly property string summary: Model.windscribeSummary(status)
+  readonly property var details: Model.windscribeDetails(status)
+  readonly property var regions: Model.windscribeRegions(locations)
+  readonly property var favorites: Model.favoriteCodes(setting("favoriteCountries", "CH,NL,US"))
+  readonly property string emptyText: locationsLoaded ? "No locations match." : "Loading locations…"
+  readonly property string currentKey: Model.windscribeCurrentKey(status, regions)
+  readonly property var targets: filter === ""
+    ? Model.windscribeQuickTargets(Model.windscribeBestNickname(locations))
+        .concat(Model.windscribeRegionTargets(regions, favorites, ""))
+    : Model.windscribeRegionTargets(regions, favorites, filter)
+
+  function setting(name, fallback) {
+    var value = settings ? settings[name] : undefined
+    return value === undefined || value === null ? fallback : value
+  }
+
+  // ------------------------------------------------------------- the queue
+  //
+  // `windscribe-cli` holds a lock for as long as it runs. A second invocation
+  // does not wait its turn and does not do the work — it exits saying
+  // "Windscribe CLI is already running" and nothing else. Two calls started
+  // together lose both answers, so a backend that polled status while fetching
+  // locations would spend its life reading failures and hiding itself.
+  //
+  // So: one process, and one job at a time.
+  //
+  // That is only half of it. The lock is per machine and the widget is
+  // instantiated once per monitor, so on a two-screen desktop there are two of
+  // these queues, each disciplined and each unaware of the other. Ordering
+  // within one instance is not enough — see the retry in onExited.
+  property var _queue: []
+  property string _running: ""
+  property var _current: null
+
+  readonly property bool _actionPending: {
+    if (_running === "connect" || _running === "disconnect") return true
+    for (var i = 0; i < _queue.length; i++) {
+      if (_queue[i].kind === "connect" || _queue[i].kind === "disconnect") return true
+    }
+    return false
+  }
+
+  readonly property bool _togglePending: {
+    if (_running === "toggle") return true
+    for (var i = 0; i < _queue.length; i++) {
+      if (_queue[i].kind === "toggle") return true
+    }
+    return false
+  }
+
+  // Reads are idempotent, so a second one waiting behind the first is a stale
+  // answer nobody asked for: the poll fires faster than the CLI replies, and a
+  // backlog of them would keep the panel a cycle behind for as long as the
+  // shell ran. A click goes to the front, because waiting out a two-hundred
+  // line location fetch is not what "connect" should feel like.
+  function enqueue(kind, args) {
+    if (kind === "status" || kind === "locations") {
+      if (_running === kind) return
+      for (var i = 0; i < _queue.length; i++) {
+        if (_queue[i].kind === kind) return
+      }
+    }
+
+    var queue = _queue.slice()
+    var job = { kind: kind, args: args, attempts: 0 }
+    if (kind === "status" || kind === "locations") queue.push(job)
+    else queue.unshift(job)
+    _queue = queue
+    pump()
+  }
+
+  // Put a job that lost the lock back at the head of its own queue. Bounded,
+  // because a lock held by something that is never going to let go is not
+  // something to keep knocking on: past the last attempt the job runs its
+  // finisher, which treats the refusal as inconclusive rather than as news.
+  function retry(job) {
+    if (job.attempts >= 4) return false
+
+    job.attempts += 1
+    var queue = _queue.slice()
+    queue.unshift(job)
+    _queue = queue
+
+    // The jitter is not decoration. Two instances that started together lose
+    // together — that is what a shared lock and a shared poll interval do — and
+    // backing off by the same amount would have them collide again on every
+    // round. Something has to break the tie, and the attempt count cannot: it
+    // is identical on both sides.
+    retryTimer.interval = 120 * job.attempts + Math.floor(Math.random() * 280)
+    retryTimer.restart()
+    return true
+  }
+
+  Timer {
+    id: retryTimer
+    interval: 200
+    repeat: false
+    onTriggered: root.pump()
+  }
+
+  function pump() {
+    if (_running !== "" || _queue.length === 0) return
+    // The bookkeeping is cleared in onExited, which can run a moment before the
+    // process itself reports finished. Come back rather than drop the job: the
+    // queue is only pumped on an enqueue otherwise, and the next one may be a
+    // poll interval away.
+    if (cliProcess.running) {
+      pumpTimer.restart()
+      return
+    }
+
+    var queue = _queue.slice()
+    var job = queue.shift()
+    _queue = queue
+    _current = job
+    _running = job.kind
+    cliProcess.command = ["windscribe-cli"].concat(job.args)
+    cliProcess.running = true
+    stallTimer.restart()
+  }
+
+  // Starting the next job from inside onExited would re-enter the process that
+  // is still finishing, the same reason the other backends hop through a timer
+  // to chain their two-step connects.
+  Timer {
+    id: pumpTimer
+    interval: 0
+    repeat: false
+    onTriggered: root.pump()
+  }
+
+  // One job at a time only works while every job ends. A process that never
+  // reports back would leave `_running` set forever, and since a read already
+  // in flight is never queued twice, the backend would stop asking about the
+  // tunnel for as long as the shell ran and quietly present its last reading as
+  // current. Nothing this CLI does takes half a minute, so past that the job is
+  // written off. `pump` still refuses to start while the process object says it
+  // is running, so writing it off cannot put two of them on the lock.
+  Timer {
+    id: stallTimer
+    interval: 30000
+    repeat: false
+    onTriggered: {
+      root._running = ""
+      root._current = null
+      root.pump()
+    }
+  }
+
+  // ------------------------------------------------------------ the verbs
+
+  // Probing, and one status read, because the login state is the other half of
+  // the answer to "is this tool here". Both are asked once: binaries do not
+  // come and go while the shell runs, and `force` is the user asking again —
+  // see refreshAll() in VpnController.
+  function detect(force) {
+    if (presenceProbe.running) return
+    if (_probed && force !== true) return
+    presenceProbe.running = true
+  }
+
+  // Two hundred locations is a lot to fetch for a tool the user switched off,
+  // and a hidden backend is given detect() alone. So the list is only ever
+  // asked for on a path that started here.
+  property bool _wantLocations: false
+
+  function refresh() {
+    if (!_present) return
+    _wantLocations = true
+    enqueue("status", ["status"])
+    loadLocations()
+  }
+
+  function loadLocations() {
+    if (!_wantLocations || !detected || locationsLoaded) return
+    enqueue("locations", ["locations"])
+  }
+
+  function setToggle(key, value) {
+    if (!detected || _togglePending) return
+
+    var args = Model.windscribeToggleArgs(key, value)
+    if (args.length === 0) return
+
+    var pending = {}
+    for (var name in _pendingToggles) pending[name] = _pendingToggles[name]
+    pending[key] = value
+    _pendingToggles = pending
+
+    lastError = ""
+    _toggleKey = key
+    enqueue("toggle", args)
+    pendingTimer.restart()
+  }
+
+  function clearPending(key) {
+    var pending = {}
+    for (var name in _pendingToggles) {
+      if (name !== key) pending[name] = _pendingToggles[name]
+    }
+    _pendingToggles = pending
+  }
+
+  // `-n` returns as soon as the daemon accepts the request instead of blocking
+  // for the length of the handshake. A blocking call would hold the CLI lock —
+  // and with it every status read — for the five or ten seconds the tunnel
+  // takes to come up, which is exactly the stretch the panel has something to
+  // say. The settle timer polls for the outcome instead.
+  function connectTo(target) {
+    if (!detected || _actionPending || !target) return
+    _desired = 1
+    lastError = ""
+    actionStatus = "Connecting to " + target.label + "…"
+    enqueue("connect", ["connect", "-n"].concat(target.args || []))
+  }
+
+  function disconnect() {
+    if (!detected || _actionPending) return
+    _desired = 0
+    lastError = ""
+    actionStatus = "Disconnecting…"
+    enqueue("disconnect", ["disconnect", "-n"])
+  }
+
+  function toggleConnection() {
+    if (connected) disconnect()
+    else connectTo({ label: "the best location", args: ["best"] })
+  }
+
+  // ------------------------------------------------------------- the state
+
+  function applyStatus(raw) {
+    var parsed = Model.parseWindscribeStatus(raw)
+    root.status = parsed
+
+    // An accepted-then-failed connect is reported nowhere but here, so the
+    // optimistic switch has to be dropped on sight of it. Left alone it would
+    // stay on "connected" until the settle timer gave up, which is the widget
+    // vouching for a tunnel that never came up.
+    if (parsed.state === "error") root._desired = -1
+    else if (root._desired !== -1 && parsed.connected === (root._desired === 1)) root._desired = -1
+
+    // The CLI's error state is sticky — it stands until the next successful
+    // connect — so this both raises the failure and clears it, rather than
+    // only ever raising it.
+    root.lastError = parsed.error !== "" ? Model.elide(parsed.error, 140) : ""
+
+    root.reconcileToggles(parsed)
+    root.loadLocations()
+  }
+
+  // Drop the optimistic value only for the keys the app has since agreed with,
+  // so a poll landing mid-flight cannot flick another switch back.
+  function reconcileToggles(parsed) {
+    var current = Model.windscribeToggles(parsed)
+    var pending = {}
+    var changed = false
+
+    for (var key in _pendingToggles) {
+      var agreed = false
+      for (var i = 0; i < current.length; i++) {
+        if (current[i].key === key && current[i].value === _pendingToggles[key]) agreed = true
+      }
+      if (agreed) changed = true
+      else pending[key] = _pendingToggles[key]
+    }
+    if (changed) _pendingToggles = pending
+  }
+
+  // A command that exits clean but does not take would otherwise leave the
+  // switch showing the position the user asked for, marked busy, for as long as
+  // the panel is open. Optimism gets a deadline.
+  Timer {
+    id: pendingTimer
+    interval: 10000
+    repeat: false
+    onTriggered: {
+      if (Object.keys(root._pendingToggles).length === 0) return
+      root._pendingToggles = ({})
+      root.lastError = "Windscribe did not apply that setting."
+    }
+  }
+
+  // Longer than the other backends': `connect -n` hands back control before the
+  // tunnel exists, and a Windscribe handshake takes several seconds. Giving up
+  // early would drop the optimistic state onto a status that is still catching
+  // up and flick the switch back under a connect that is going to succeed.
+  Timer {
+    id: settleTimer
+    property int ticks: 0
+    interval: 1500
+    repeat: true
+    running: false
+    onTriggered: {
+      settleTimer.ticks += 1
+      root.refresh()
+      if (settleTimer.ticks >= 8) {
+        settleTimer.ticks = 0
+        settleTimer.running = false
+        root._desired = -1
+      }
+    }
+  }
+
+  // ---------------------------------------------------------- the processes
+
+  // The only call that does not go through the queue, because it is not the
+  // Windscribe CLI: `omarchy-cmd-present` takes no lock and answers instantly.
+  Process {
+    id: presenceProbe
+    command: ["omarchy-cmd-present", "windscribe-cli"]
+    running: true
+    onExited: function(exitCode) {
+      root._probed = true
+      root._present = exitCode === 0
+      // Login state takes a second command. Not refresh(): that would fetch the
+      // location list for a tool the user may have hidden.
+      if (root._present) root.enqueue("status", ["status"])
+    }
+  }
+
+  Process {
+    id: cliProcess
+    running: false
+    command: []
+    stdout: StdioCollector { id: cliStdout; waitForEnd: true }
+    stderr: StdioCollector { id: cliStderr; waitForEnd: true }
+    onExited: function(exitCode) {
+      var job = root._current
+      var kind = root._running
+      var out = String(cliStdout.text || "")
+      var err = String(cliStderr.text || "")
+
+      stallTimer.stop()
+      root._running = ""
+      root._current = null
+
+      // Somebody else had the lock. Nothing was read and nothing was done, so
+      // this is not a result to act on — ask again in a moment. Usually the
+      // somebody is this same widget on another monitor.
+      if (job && root.cliLocked(out, err) && root.retry(job)) return
+
+      if (kind === "status") root.finishStatus(exitCode, out, err)
+      else if (kind === "locations") root.finishLocations(exitCode, out)
+      else if (kind === "toggle") root.finishToggle(exitCode, out, err)
+      else if (kind !== "") root.finishAction(exitCode, out, err)
+
+      pumpTimer.restart()
+    }
+  }
+
+  // Something else is holding the CLI lock. The call did no work and returned
+  // no state, so nothing is concluded from it; the next poll asks again.
+  function cliLocked(out, err) {
+    return Model.isWindscribeCliLocked(out) || Model.isWindscribeCliLocked(err)
+  }
+
+  function finishStatus(exitCode, out, err) {
+    var parsed = Model.parseWindscribeStatus(out)
+
+    if (exitCode !== 0 || !parsed.loaded) {
+      if (root.cliLocked(out, err)) return
+
+      // Nothing recognizable came back: the app is not running, or this is a
+      // CLI whose output this parser does not know. Either way the last reading
+      // is not evidence about now, so drop it rather than keep presenting it.
+      root._statusFailed = true
+      root.status = Model.parseWindscribeStatus("")
+      root.lastError = Model.elide(err || out || "Could not read Windscribe status", 140)
+      return
+    }
+
+    root._statusFailed = false
+    root.applyStatus(out)
+  }
+
+  // "Loaded" means asked and answered. A list this parser cannot read is a
+  // reason to say so once, not to re-fetch two hundred lines on every poll for
+  // as long as the shell runs.
+  function finishLocations(exitCode, out) {
+    if (exitCode !== 0 || root.cliLocked(out, "")) return
+
+    root.locations = Model.parseWindscribeLocations(out)
+    root.locationsLoaded = true
+    if (root.locations.length === 0) {
+      root.lastError = "Could not read the location list. Check: windscribe-cli locations"
+    }
+  }
+
+  function finishAction(exitCode, out, err) {
+    // A non-zero exit here means the request was refused outright — a location
+    // name the daemon does not know, or a client that cannot reach the app. The
+    // other kind of failure exits 0 and surfaces in the status line seconds
+    // later, which is what the settle timer is watching for.
+    if (exitCode !== 0 || root.cliLocked(out, err)) {
+      root._desired = -1
+      root.lastError = Model.elide(err || out || "Windscribe command failed", 140)
+    }
+    root.actionStatus = ""
+    settleTimer.ticks = 0
+    settleTimer.restart()
+    root.refresh()
+  }
+
+  function finishToggle(exitCode, out, err) {
+    if (exitCode !== 0 || root.cliLocked(out, err)) {
+      root.lastError = Model.elide(err || out || "Windscribe refused that setting", 140)
+      root.clearPending(root._toggleKey)
+    }
+    root._toggleKey = ""
+    root.enqueue("status", ["status"])
+  }
+}
