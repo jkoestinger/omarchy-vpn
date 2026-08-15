@@ -4,15 +4,16 @@ A VPN widget for the Omarchy bar. One icon shows whether you are behind a
 tunnel; one panel connects, disconnects, and switches between the VPN tools you
 actually have installed.
 
-It supports **Proton VPN**, **Mullvad**, and the **OpenVPN** and **WireGuard**
-profiles NetworkManager holds. Only the tools
+It supports **Proton VPN**, **Mullvad**, **Windscribe**, and the **OpenVPN** and
+**WireGuard** profiles NetworkManager holds. Only the tools
 that have something to offer appear — install none and the widget tells you so;
 have several and a chip row lets you switch between them.
 
 <img src="preview.png" alt="The VPN panel open in the Omarchy bar, showing a Proton VPN connection to Zurich and a country list" width="365">
 
 Each installed tool gets its own chip and its own view — Proton VPN above,
-[Mullvad](#mullvad) and [NetworkManager](#networkmanager-profiles) below.
+[Mullvad](#mullvad), [Windscribe](#windscribe) and
+[NetworkManager](#networkmanager-profiles) below.
 
 ## Install
 
@@ -60,15 +61,16 @@ Inside the panel:
   chevron; click the row to fold them out, click it again to put them away. It
   starts closed and stays however you left it until the shell restarts.
 - **The settings** inside are Mullvad's connect-on-startup, lockdown mode, and
-  local network sharing, and Proton VPN's kill switch, NetShield, and port
-  forwarding. They show what the tool itself reports, so changing one from its
-  CLI shows up here on the next poll — the widget keeps no copy and never puts
-  one back for you.
+  local network sharing, Proton VPN's kill switch, NetShield, and port
+  forwarding, and Windscribe's firewall. They show what the tool itself reports,
+  so changing one from its CLI shows up here on the next poll — the widget keeps
+  no copy and never puts one back for you.
 - **The list** is what you can connect to: for Proton VPN, fastest / P2P /
   random / Secure Core followed by every country; for Mullvad, any location
-  followed by every country it has relays in; for NetworkManager, your OpenVPN
-  and WireGuard profiles, told apart by their icon. A check mark marks where you
-  are connected.
+  followed by every country it has relays in; for Windscribe, best location
+  followed by every region it serves; for NetworkManager, your OpenVPN and
+  WireGuard profiles, told apart by their icon. A check mark marks where you are
+  connected.
 
 Keyboard, once the panel is open: `j`/`k` or arrows move — through the header,
 the chips, the name row, the settings switches if they are open, then the list —
@@ -87,6 +89,8 @@ Omarchy with its Quickshell desktop, plus at least one of:
 - **Proton VPN** — the `protonvpn` CLI, signed in (`protonvpn signin`).
 - **Mullvad** — the `mullvad` CLI with `mullvad-daemon` running, logged in
   (`mullvad account login <number>`).
+- **Windscribe** — `windscribe-cli` with the Windscribe app running, logged in
+  (`windscribe-cli login`).
 - **OpenVPN or WireGuard** — `nmcli`, plus `openvpn` or `wg` (wireguard-tools),
   with at least one profile imported into NetworkManager.
 
@@ -99,8 +103,8 @@ Configure these in **Setup › Plugins**, or in the widget's entry in
 |---------|---------|--------------|
 | `refreshIntervalSec` | `15` | How often the connection status is polled |
 | `preferredBackend` | `Auto` | Which tool the panel opens on. `Auto` picks whichever is connected |
-| `favoriteCountries` | `CH,NL,US` | Country codes pinned to the top of the Proton VPN and Mullvad lists |
-| `hiddenBackends` | *(empty)* | Tools the widget ignores entirely: `proton`, `mullvad`, `networkmanager`. The gear inside the panel writes this |
+| `favoriteCountries` | `CH,NL,US` | Country codes pinned to the top of the Proton VPN and Mullvad lists. Windscribe has no codes, so it matches names instead — see below |
+| `hiddenBackends` | *(empty)* | Tools the widget ignores entirely: `proton`, `mullvad`, `windscribe`, `networkmanager`. The gear inside the panel writes this |
 
 ## Mullvad
 
@@ -124,6 +128,45 @@ own. That switch is in the panel, or:
 ```bash
 mullvad lockdown-mode set off
 ```
+
+## Windscribe
+
+`windscribe-cli` is a client for the Windscribe desktop app, so the chip appears
+only once that app is running and logged in. Until then the panel says which of
+the two is missing instead of listing an empty chip.
+
+The list is Windscribe's own regions — a country most of the time, a slice of one
+where a country has too many (`US East`, `US West`). Clicking one connects to a
+datacenter inside it. **Best location** hands the choice back to Windscribe, and
+names the server it currently resolves to. Cities and Windscribe's server
+nicknames are searchable even though only regions are listed, so both `zurich`
+and `alphorn` find Switzerland.
+
+Rows marked **Pro only** hold nothing a free account can reach. Connecting to one
+fails with `Location does not exist or is disabled`, which does not say which of
+the two it meant — hence the marker.
+
+Because Windscribe names its regions and never prints a country code,
+`favoriteCountries` matches them by name (`Switzerland`) and by leading word
+(`US` pins US East, US Central and US West). The default `CH,NL,US` therefore
+pins only the US rows on this chip.
+
+**The firewall** is Windscribe's kill switch, and with the app's firewall mode set
+to `Auto` it turns itself on before a connect and off after a disconnect. While it
+is on and the tunnel is down, nothing leaves the machine — including the traffic
+another VPN needs to connect. The widget says so before it shuts Windscribe down
+for a different tool, but it will not turn the firewall off on its own. That
+switch is in the panel, or:
+
+```bash
+windscribe-cli firewall off
+```
+
+One caveat that is Windscribe's and not the widget's: `windscribe-cli` refuses to
+run while another copy of itself is running, exiting with `Windscribe CLI is
+already running` rather than waiting its turn. The widget serialises its own calls
+and retries the ones that lose the race, so a command you run yourself at a
+terminal costs the panel a moment and nothing more.
 
 ## NetworkManager profiles
 
@@ -194,6 +237,10 @@ is the one saying no.
 the daemon with `sudo systemctl start mullvad-daemon` (and `enable` it to have it
 come back after a reboot).
 
+**Windscribe is installed but has no chip.** `windscribe-cli` is a client too.
+The panel says which half is missing — start the Windscribe app, or
+`windscribe-cli login` — and picks the chip up on the next refresh.
+
 **Nothing appears in the bar.** Confirm the plugin is enabled with
 `omarchy plugin list`, then `omarchy restart shell`.
 
@@ -209,9 +256,9 @@ it:
 ```bash
 omarchy-shell jkoestinger.vpn status       # "Proton VPN · CH#1129 · Zurich, Switzerland"
 omarchy-shell jkoestinger.vpn ip           # current public address
-omarchy-shell jkoestinger.vpn backends     # "proton mullvad networkmanager"
+omarchy-shell jkoestinger.vpn backends     # "proton mullvad windscribe networkmanager"
 omarchy-shell jkoestinger.vpn use mullvad  # switch the panel's active tool
-omarchy-shell jkoestinger.vpn connect CH   # country code, profile name, or row key
+omarchy-shell jkoestinger.vpn connect CH   # country code, region or profile name, or row key
 omarchy-shell jkoestinger.vpn quickconnect # each tool's default connection
 omarchy-shell jkoestinger.vpn disconnect
 omarchy-shell jkoestinger.vpn toggle       # open or close the panel
@@ -219,8 +266,10 @@ omarchy-shell jkoestinger.vpn toggle       # open or close the panel
 
 ## Contributing
 
-Adding support for another VPN tool means writing one file. See
-[ARCHITECTURE.md](ARCHITECTURE.md).
+Adding support for another VPN tool means two files of its own and two lines in
+the controller. [CONTRIBUTING.md](CONTRIBUTING.md) covers how to run, test and
+debug the widget; [ARCHITECTURE.md](ARCHITECTURE.md) covers how it is put
+together and why.
 
 ## License
 

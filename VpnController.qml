@@ -1,6 +1,6 @@
 import QtQuick
 import Quickshell.Io
-import "Model.js" as Model
+import "model/Shared.js" as Shared
 
 // Owns every VPN backend, decides which one the panel is looking at, and polls
 // the detected ones. The panel talks to `active` and never to a specific tool.
@@ -8,6 +8,8 @@ import "Model.js" as Model
 // Backend contract (duck-typed — a backend is any Item exposing these):
 //
 //   backendId, label, glyph          identity for the switcher chips
+//   lockdownMode, lockdownHint       optional: this tool blocks all traffic
+//                                    while it is down, and how to stop it
 //   supportsFilter, filterPlaceholder whether the panel shows its filter field
 //   filter                           panel writes the current filter text here
 //   detected                         tool is installed and has something to offer
@@ -32,12 +34,12 @@ Item {
   // Set when the user picks a chip; "" follows `preferredBackend`.
   property string selectedId: ""
 
-  readonly property var backends: [proton, mullvad, networkManager]
+  readonly property var backends: [proton, mullvad, windscribe, networkManager]
   // Tools this machine has. Hiding one is a statement about the widget, not
   // about the machine, so the settings view lists these — including the hidden
   // ones, which would otherwise be unreachable once they were switched off.
   readonly property var detectedBackends: backends.filter(function(backend) { return backend.detected })
-  readonly property var hiddenBackendIds: Model.parseBackendIds(setting("hiddenBackends", ""))
+  readonly property var hiddenBackendIds: Shared.parseBackendIds(setting("hiddenBackends", ""))
   readonly property var availableBackends: detectedBackends.filter(function(backend) {
     return !root.isHidden(backend.backendId)
   })
@@ -154,7 +156,7 @@ Item {
     stdout: StdioCollector { id: ipStdout; waitForEnd: true }
     onExited: function(exitCode) {
       root.ipFetching = false
-      var address = Model.parsePublicIp(String(ipStdout.text || ""))
+      var address = Shared.parsePublicIp(String(ipStdout.text || ""))
       if (exitCode === 0 && address !== "") {
         root.publicIp = address
         root.ipFailed = false
@@ -177,11 +179,18 @@ Item {
     return n
   }
 
+  // The setting stores the label rather than the id, because it is written by
+  // Omarchy's settings dialog from the enum in manifest.json and a user reading
+  // that list should see the tool's name. Matching against the backends
+  // themselves keeps the two ends of that mapping from drifting apart: a
+  // backend is the only thing that knows its own label, and "Auto" — along with
+  // a stale name left behind by a backend that has since been renamed or
+  // removed — falls through to "" and lets the usual precedence decide.
   function preferredId() {
     var preferred = String(setting("preferredBackend", "Auto"))
-    if (preferred === "Proton VPN") return "proton"
-    if (preferred === "Mullvad") return "mullvad"
-    if (preferred === "NetworkManager") return "networkmanager"
+    for (var i = 0; i < root.backends.length; i++) {
+      if (root.backends[i].label === preferred) return root.backends[i].backendId
+    }
     return ""
   }
 
@@ -264,12 +273,16 @@ Item {
     }
 
     for (var i = 0; i < others.length; i++) {
-      // Mullvad's lockdown mode drops all traffic the moment its tunnel goes
-      // down, which is exactly when the incoming connect needs the network.
-      // Say so up front rather than let it fail as a timeout.
+      // Mullvad's lockdown mode and Windscribe's firewall both drop all traffic
+      // the moment their tunnel goes down, which is exactly when the incoming
+      // connect needs the network. Say so up front rather than let it fail as a
+      // timeout. The command to undo it is the backend's to name — a backend
+      // that offers no hint still gets the warning.
       if (others[i].lockdownMode === true) {
+        var undo = String(others[i].lockdownHint || "")
         setNotice(others[i].label + " blocks all traffic while it is disconnected, "
-          + "so connecting will not get through. Turn it off with: mullvad lockdown-mode set off")
+          + "so connecting will not get through."
+          + (undo !== "" ? " Turn it off with: " + undo : ""))
       }
       others[i].disconnect()
     }
@@ -346,6 +359,11 @@ Item {
 
   MullvadBackend {
     id: mullvad
+    settings: root.settings
+  }
+
+  WindscribeBackend {
+    id: windscribe
     settings: root.settings
   }
 

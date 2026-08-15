@@ -1,8 +1,10 @@
 # Architecture
 
 The panel knows nothing about any particular VPN tool. It renders whatever the
-active backend exposes, and the controller decides which backend that is. Adding
-a tool means writing one file and adding one line.
+active backend exposes, and the controller decides which backend that is. A tool
+is two files of its own plus two lines in the controller — see [Adding a
+backend](#adding-a-backend), and [CONTRIBUTING.md](CONTRIBUTING.md) for the
+surrounding workflow.
 
 ## Files
 
@@ -13,8 +15,19 @@ a tool means writing one file and adding one line.
 | `VpnController.qml` | Owns the backends, picks the active one, enforces exclusivity, fetches the public IP |
 | `ProtonBackend.qml` | Proton VPN, via the `protonvpn` CLI |
 | `MullvadBackend.qml` | Mullvad, via the `mullvad` CLI |
+| `WindscribeBackend.qml` | Windscribe, via `windscribe-cli` |
 | `NetworkManagerBackend.qml` | OpenVPN and WireGuard, via NetworkManager |
-| `Model.js` | Pure parsing and row-building. No QML, no side effects |
+| `model/Shared.js` | Helpers every backend leans on, and the widget's own settings |
+| `model/Proton.js`, `model/Mullvad.js`, `model/Windscribe.js`, `model/NetworkManager.js` | Pure parsing and row-building, one file per tool. No QML, no side effects |
+
+Each backend is a pair: the `.qml` file holds the `Process` plumbing, and the
+matching `model/*.js` holds everything that can be decided without running a
+command. The split is what makes the interesting half testable, so a backend
+that puts its parsing in the QML file has given that up.
+
+`model/*.js` files are QML `.pragma library` scripts. A backend's model imports
+the shared helpers with `.import "Shared.js" as Shared` and imports nothing
+else — no model file may reach into another tool's.
 
 ## The backend contract
 
@@ -25,8 +38,9 @@ duck-types, so a backend that omits something simply renders as blank.
 
 | Property | Meaning |
 |----------|---------|
-| `backendId` | Stable key used by settings and IPC (`proton`, `mullvad`, `networkmanager`) |
-| `label` | Name on the switcher chip and hero |
+| `backendId` | Stable key used by settings and IPC (`proton`, `mullvad`, `windscribe`, `networkmanager`) |
+| `label` | Name on the switcher chip and hero. Also what `preferredBackend` stores, so it must match that enum in `manifest.json` exactly |
+| `installNames` | What a user would install to make this backend useful, as a list. The panel joins them into its "install something" line when no tool is detected. Usually one name and the same as `label` — NetworkManager is the exception, offering `["OpenVPN", "WireGuard"]`, because nobody installs a connection manager to get a VPN |
 | `glyph` | Nerd Font character for the hero icon |
 | `supportsFilter`, `filterPlaceholder` | Whether the panel shows its filter field |
 | `filter` | The panel writes the current filter text here |
@@ -57,13 +71,14 @@ otherwise keep polling a tool the user switched off. `refresh()` guards itself,
 so the controller can call it unconditionally.
 
 `toggleConnection()` is the backend's own idea of a default connection — Proton
-picks the fastest server; Mullvad reuses its stored relay constraint;
-NetworkManager connects the only profile if there is exactly one, and otherwise
-asks the user to pick.
+picks the fastest server; Mullvad reuses its stored relay constraint; Windscribe
+takes its best location; NetworkManager connects the only profile if there is
+exactly one, and otherwise asks the user to pick.
 
 A backend may also expose `lockdownMode`, meaning "this tool blocks all traffic
 while it is disconnected". The controller warns about it before tearing that
-backend down for another one.
+backend down for another one, and names the command from the backend's
+`lockdownHint` so the warning is not written in one tool's vocabulary.
 
 It may also expose `setupHint`: one line explaining why it is not `detected`
 and what would change that. The panel shows the first non-empty hint in place
@@ -72,12 +87,29 @@ is installed and merely has nothing to connect to yet.
 
 ## Adding a backend
 
-1. Write `WireGuardBackend.qml` implementing the contract above.
-2. Add it to `VpnController.backends` and instantiate it alongside the others.
+Say the tool is called Tunnelbear.
 
-That is the whole integration. The chips, hero, detail rows, target list,
-keyboard navigation, exclusivity, and public-IP refresh all follow from the
-contract.
+1. `model/Tunnelbear.js` — the parsing and the row-building. Start with
+   `.pragma library` and `.import "Shared.js" as Shared`.
+2. `tests/model/tunnelbear.test.js` — the suite picks it up by filename, so
+   nothing else needs editing to run it.
+3. `TunnelbearBackend.qml` — the `Process` plumbing, implementing the contract
+   above. It imports `model/Shared.js` and `model/Tunnelbear.js`, and no other
+   backend's model.
+4. `VpnController.qml` — add it to the `backends` list, and instantiate it
+   alongside the others. Two lines, next to each other.
+5. `manifest.json` — add the `label` to the `preferredBackend` enum.
+
+Step 5 is the one that cannot be derived: that enum is static JSON, read by
+Omarchy's settings dialog before any QML runs, so nothing at runtime can fill it
+in. Everything else about the tool is discovered from the backend itself — the
+chips, hero, detail rows, target list, keyboard navigation, exclusivity, the
+public-IP refresh, the `preferredBackend` mapping, and the panel's line naming
+what a user could install.
+
+Anything you find yourself adding to `Panel.qml` or `model/Shared.js` to make
+one tool work is worth a second look: the contract is meant to absorb that, and
+if it cannot, the contract is what should change.
 
 ## Design notes
 
@@ -133,6 +165,87 @@ the hero exactly as it was — no empty drawer, no dead handle. The open/closed
 state lives on the panel, so it survives a close and reopen but not a shell
 restart, and folding the drawer while the cursor is inside it moves the cursor
 back to the hero rather than stranding it.
+
+**Windscribe is a client, twice over.** `windscribe-cli` talks to the Windscribe
+desktop app, so the binary being present says nothing: an app that is not running
+answers nothing, and one nobody is logged into has no locations and cannot
+connect. `detected` is therefore `present && loggedIn`, which takes a status read
+to answer — so `detect()` runs two commands rather than one, and the two failures
+are told apart in `setupHint`.
+
+**Windscribe takes a lock, and the widget is not one process.** Two
+`windscribe-cli` invocations may not overlap: the second exits with `Windscribe
+CLI is already running` and does no work, so a pair started together loses both
+answers. Every call the backend makes therefore goes through one queue and one
+process, with reads deduplicated (a status poll already in flight is not queued
+behind itself) and clicks pushed to the front.
+
+That much is only half the problem, and the half that is easy to mistake for all
+of it. The lock is per machine, and each bar instantiates the widget separately —
+so a two-monitor desktop runs two of these queues, each perfectly disciplined and
+each blind to the other. They poll on the same interval, so they collide on the
+same tick, and both lose. A backend that treated the refusal as an answer would
+hide itself on whichever screen came second, intermittently, for reasons nothing
+in one instance could explain.
+
+So a refusal is not a result. The job goes back to the head of its own queue and
+is tried again, up to four times, after a jittered delay — jittered because two
+instances that lost together would otherwise back off by the same amount and
+collide again on every round, and the attempt count is identical on both sides so
+it cannot be what breaks the tie. Past the last attempt the finisher runs and
+treats the refusal as inconclusive rather than as news; the next poll asks again.
+The same path covers the user running the CLI at a terminal, which is the case
+that cannot be designed away.
+
+A stall timer covers the remaining way for "one at a time" to fail: a job that
+never comes back would hold the runner slot forever, and since a read already in
+flight is never queued twice, the backend would quietly stop asking about the
+tunnel for as long as the shell ran. It **kills** the process rather than
+forgetting it — a forgotten one still holds the machine-wide lock, blocking every
+other copy of the widget as well as this one, while nothing could start behind
+it. Killing makes `onExited` fire and the usual path does the bookkeeping.
+
+Nothing in the queue waits on a zero-interval timer. `pump` never arranges to be
+called back while a job is on the wire; the running job's `onExited` is what
+pumps. An earlier version re-armed a 0 ms timer there, which turned a hung CLI
+into a shell spinning through its event loop for the length of the hang.
+
+The queue rules themselves — dedupe, front-insertion, bounded retry, backoff —
+live in `model/Windscribe.js` as a reducer over `(queue, running job)`, because
+they are logic rather than plumbing and they are the part that has been wrong.
+
+**A status that cannot be read is stale, not empty.** The last reading is kept
+and flagged, never replaced with a blank one, and two things hang on that.
+`detected` follows the login state, so blanking would take the chip away while a
+tunnel is up — and with it the only way to bring that tunnel down, since every
+verb refuses to run undetected. That is the hazard NetworkManagerBackend keeps
+its own stale list to avoid. And a blank status reports the firewall as off:
+losing contact with the app is exactly when the widget must not start claiming
+that nothing is being blocked.
+
+For the same reason a firewall line this parser cannot read counts as "might be
+blocking" when the controller weighs whether to warn, even though the summary
+line still reports only what the tool actually said. One weighs a risk, the
+other states a fact.
+
+**Windscribe connects non-blocking.** `connect -n` returns as soon as the daemon
+accepts the request. A blocking call would hold the CLI lock — and with it every
+status read — for the whole handshake, which is exactly the stretch the panel has
+something to say. The cost is that the exit code stops meaning anything: a free
+account reaching for a Pro location is accepted, exits 0, and fails seconds later
+with nothing but `Connect state: Error: …` to show for it. So the optimistic
+state is dropped the moment a status read reports that error, rather than waiting
+out the settle timer and vouching for a tunnel that never came up. The error is
+sticky in the CLI — it stands until the next successful connect — so the backend
+both raises and clears it from the same reading.
+
+**Windscribe rows are regions, not countries.** `windscribe-cli locations` prints
+`Region - City - Nickname`, and `connect` takes any of the three. Regions are the
+grouping the tool itself uses and the shortest useful list, so they are what the
+panel shows; cities and nicknames stay searchable. `status` names only the city
+and the nickname, never the region, so the row to tick is looked back up in the
+list — city first across every region, since two regions sharing a nickname is
+likelier than two sharing a city.
 
 **Two kinds of settings, two places.** The drawer above holds the *tool's*
 settings, which the widget only reflects. The gear in the header holds the
@@ -233,8 +346,8 @@ in QML.
 ## Working on it
 
 Files under `~/.config/omarchy/plugins/` hot-reload on save — QML files, that
-is. Changes to `Model.js` do **not** take effect until the shell restarts, since
-a `.pragma library` script stays cached:
+is. Changes under `model/` do **not** take effect until the shell restarts,
+since a `.pragma library` script stays cached:
 
 ```bash
 omarchy restart shell
@@ -264,9 +377,9 @@ Check a manifest change with `omarchy plugin validate .` before committing.
 
 ## Tests
 
-`Model.js` is where every assumption about how three CLIs format their output
-lives, and it is the one file that runs without a QML engine. The suite covers
-it:
+The `model/` files are where every assumption about how four CLIs format their
+output lives, and they are the only half of the widget that runs without a QML
+engine. The suite covers them:
 
 ```bash
 node tests/run.js
@@ -280,11 +393,16 @@ crash with exit 255 and no message. A batch invocation adds the same directory
 for the same reason. Neither is a defect in the file being checked.
 
 No framework and no `package.json` — a suite that needed installing would not
-get run, and the plugin is not built. `tests/run.js` evaluates `Model.js` in the
-node realm and collects the names it declares, since a `.pragma library` has no
-exports. CI runs the same command on push and pull request.
+get run, and the plugin is not built. `tests/harness.js` strips the `.pragma`
+and `.import` lines, which are not JavaScript, evaluates each model file in the
+node realm, and collects the names it declares, since a `.pragma library` has no
+exports. `Shared.js` is loaded first and bound to a global of that name, which
+is what the `.import` line resolves to inside the QML engine; that is the whole
+of the emulation. `tests/run.js` then runs every `tests/model/*.test.js` it
+finds, so a new backend's tests are picked up by dropping the file in. CI runs
+the same command on push and pull request.
 
 The QML halves are not covered: they are `Process` plumbing and bindings, and
-the interesting logic was pushed into `Model.js` precisely so it could be
-tested. When a bug turns out to live in a parser, the fix belongs there with a
-case beside it.
+the interesting logic was pushed into `model/` precisely so it could be tested.
+When a bug turns out to live in a parser, the fix belongs there with a case
+beside it.

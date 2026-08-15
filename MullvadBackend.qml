@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell.Io
-import "Model.js" as Model
+import "model/Shared.js" as Shared
+import "model/Mullvad.js" as Mullvad
 
 // Mullvad backend, driven by the `mullvad` CLI talking to `mullvad-daemon`.
 // Implements the backend contract documented in VpnController.qml.
@@ -16,16 +17,17 @@ Item {
 
   readonly property string backendId: "mullvad"
   readonly property string label: "Mullvad"
-  readonly property string glyph: Model.GLYPH_VPN
+  readonly property var installNames: ["Mullvad"]
+  readonly property string glyph: Shared.GLYPH_VPN
   readonly property bool supportsFilter: true
   // Cities match too, but the field is only so wide.
   readonly property string filterPlaceholder: "Filter countries — press / to search"
 
   property bool detected: false
-  property var status: Model.parseMullvadStatus("")
+  property var status: Mullvad.parseMullvadStatus("")
   property var relays: []
   property bool relaysLoaded: false
-  property var daemonSettings: Model.parseMullvadSettings("")
+  property var daemonSettings: Mullvad.parseMullvadSettings("")
   property string actionStatus: ""
   property string lastError: ""
 
@@ -36,10 +38,11 @@ Item {
   readonly property bool lockdownMode: daemonSettings.seen !== undefined
     && daemonSettings.seen.lockdown === true
     && daemonSettings.lockdown
+  readonly property string lockdownHint: "mullvad lockdown-mode set off"
 
   // Switches the panel draws under the detail rows. Values are whatever the
   // daemon last reported; the widget stores none of them.
-  readonly property var toggles: Model.applyPendingToggles(Model.mullvadToggles(daemonSettings), _pendingToggles)
+  readonly property var toggles: Shared.applyPendingToggles(Mullvad.mullvadToggles(daemonSettings), _pendingToggles)
   property var _pendingToggles: ({})
 
   // Optimistic connection state so the switch flips the instant you click it.
@@ -51,14 +54,14 @@ Item {
   // "running" alone would leave a gap a second click could slip through.
   readonly property bool _working: commandProcess.running || chainTimer.running || _stage !== ""
   readonly property bool busy: _working || statusProcess.running
-  readonly property string summary: Model.mullvadSummary(status)
-  readonly property var details: Model.mullvadDetails(status)
-  readonly property var favorites: Model.favoriteCodes(setting("favoriteCountries", "CH,NL,US"))
+  readonly property string summary: Mullvad.mullvadSummary(status)
+  readonly property var details: Mullvad.mullvadDetails(status)
+  readonly property var favorites: Shared.favoriteCodes(setting("favoriteCountries", "CH,NL,US"))
   readonly property string emptyText: relaysLoaded ? "No countries match." : "Loading relays…"
-  readonly property string currentKey: Model.mullvadCurrentKey(status, relays)
+  readonly property string currentKey: Mullvad.mullvadCurrentKey(status, relays)
   readonly property var targets: filter === ""
-    ? Model.mullvadQuickTargets().concat(Model.mullvadCountryTargets(relays, favorites, ""))
-    : Model.mullvadCountryTargets(relays, favorites, filter)
+    ? Mullvad.mullvadQuickTargets().concat(Mullvad.mullvadCountryTargets(relays, favorites, ""))
+    : Mullvad.mullvadCountryTargets(relays, favorites, filter)
 
   // What connectTo() is in the middle of: "location", then "connect".
   property string _stage: ""
@@ -91,7 +94,7 @@ Item {
   function setToggle(key, value) {
     if (!detected || toggleProcess.running) return
 
-    var args = Model.mullvadToggleArgs(key, value)
+    var args = Mullvad.mullvadToggleArgs(key, value)
     if (args.length === 0) return
 
     var pending = {}
@@ -107,7 +110,7 @@ Item {
   }
 
   function applySettings(raw) {
-    var parsed = Model.parseMullvadSettings(raw)
+    var parsed = Mullvad.parseMullvadSettings(raw)
     // A read that answered nothing is not a report that everything is off.
     // Keep whatever the daemon last actually said.
     if (!parsed.loaded) return
@@ -178,7 +181,7 @@ Item {
   }
 
   function applyStatus(raw) {
-    var parsed = Model.parseMullvadStatus(raw)
+    var parsed = Mullvad.parseMullvadStatus(raw)
     root.status = parsed
     // Reality caught up with the pending connect/disconnect — stop overriding.
     if (_desired !== -1 && parsed.connected === (_desired === 1)) _desired = -1
@@ -190,7 +193,7 @@ Item {
       return "No Mullvad account on this machine. Log in with: mullvad account login"
     }
     if (daemonUnreachable(text)) return daemonMessage()
-    return Model.elide(text || fallback, 140)
+    return Shared.elide(text || fallback, 140)
   }
 
   function daemonUnreachable(text) {
@@ -282,7 +285,7 @@ Item {
       var output = String(statusStderr.text || statusStdout.text || "")
       root.lastError = root.daemonUnreachable(output)
         ? root.daemonMessage()
-        : Model.elide(output || "Could not read Mullvad status", 140)
+        : Shared.elide(output || "Could not read Mullvad status", 140)
     }
   }
 
@@ -331,7 +334,7 @@ Item {
     stdout: StdioCollector { id: relaysStdout; waitForEnd: true }
     onExited: function(exitCode) {
       if (exitCode !== 0) return
-      root.relays = Model.parseMullvadRelays(String(relaysStdout.text || ""))
+      root.relays = Mullvad.parseMullvadRelays(String(relaysStdout.text || ""))
       root.relaysLoaded = true
       if (root.relays.length === 0) {
         root.lastError = "Could not read the relay list. Check: mullvad relay list"
