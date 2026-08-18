@@ -80,6 +80,9 @@ Item {
 
   function detect(force) {
     if (detectProcess.running) return
+    // Also the only thing that re-reads a relay list the CLI refused, since the
+    // guard below latches on the answer and not on the answer being usable.
+    if (force === true) relaysLoaded = false
     if (_probed && force !== true) return
     detectProcess.running = true
   }
@@ -324,13 +327,20 @@ Item {
     running: false
     command: ["mullvad", "relay", "list"]
     stdout: StdioCollector { id: relaysStdout; waitForEnd: true }
+    stderr: StdioCollector { id: relaysStderr; waitForEnd: true }
     onExited: function(exitCode) {
-      if (exitCode !== 0) return
-      root.relays = Mullvad.parseMullvadRelays(String(relaysStdout.text || ""))
+      // A refusal is an answer too. Returning here without latching left a
+      // daemon that was down — or a CLI that wanted an account — re-asked for
+      // the largest thing this tool prints on every poll, forever.
+      var unreadable = "Could not read the relay list. Check: mullvad relay list"
       root.relaysLoaded = true
-      if (root.relays.length === 0) {
-        root.lastError = "Could not read the relay list. Check: mullvad relay list"
+      if (exitCode !== 0) {
+        root.lastError = root.describeFailure(
+          String(relaysStderr.text || "") + "\n" + String(relaysStdout.text || ""), unreadable)
+        return
       }
+      root.relays = Mullvad.parseMullvadRelays(String(relaysStdout.text || ""))
+      if (root.relays.length === 0) root.lastError = unreadable
     }
   }
 
