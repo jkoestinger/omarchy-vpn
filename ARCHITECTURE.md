@@ -150,13 +150,43 @@ line rather than on line position, and handles both the modern combined form
 (`Server: CH#1129 in Zurich, Switzerland`) and older separate `Country`/`City`
 keys.
 
+**Proton spawns are expensive, and a signed-out CLI refuses forever.** Every
+non-hidden backend is polled on the interval whether or not the panel is open,
+and `protonvpn` is a Python entry point: roughly 0.75 CPU-seconds per invocation
+against a Go binary's few milliseconds. So Proton asks for one thing per poll,
+not three. `_configLoaded` and `countriesLoaded` both mean *asked and answered* —
+latched on the answer, not on the answer being usable — and `detect(force)` is
+what clears them, which is the user opening the panel or pressing `r`.
+
+The status read that remains runs at the rate the answer can change, not at the
+controller's. Connected reads every tick: a tunnel that drops behind a closed
+panel leaves the chip claiming protection nobody has, and overstating protection
+is the one wrong answer worth a Python start to avoid. Disconnected reads every
+fourth — understating it is harmless by comparison, and the only thing that makes
+it connected is somebody acting, either through the widget (`refreshNow()`, which
+is what `settleTimer` and a finished action use, ignores the cadence) or at a
+terminal, which the next slow tick catches inside a minute. Signed out does not
+read at all. Idle goes from twelve spawns a minute to one, or to none, and a
+two-monitor desktop instantiates all of this twice.
+
+Signed out is the case that made this matter: `protonvpn status` exits 0 and
+prints `Status: Disconnected`, so `detected` stays true and the poll runs
+happily, while `config list` and `countries list` each exit 2 with
+`Authentication required …`. Read as a plain failure that is three Python starts
+every 15 seconds for the life of the shell. `protonAuthRequired` tells that
+refusal apart from a tool that is unwell, `signedOut` latches it, and the panel
+says `protonvpn signin` instead of `Loading countries…` forever.
+
 **Settings are read, never owned.** `toggles` always reports what the tool
 itself last said, and the widget stores no copy — nothing in `manifest.json`
 asserts a desired value at startup. Turning lockdown on from the Mullvad CLI
 shows up in the panel on the next poll, and a widget restart never quietly puts a
-setting back. The cost is one extra read per refresh (`mullvad` answers three
-subcommands in one shell; Proton answers with `protonvpn config list`), which is
-a local call in both cases.
+setting back. The cost is one extra read (`mullvad` answers three subcommands in
+one shell; Proton answers with `protonvpn config list`), which is a local call in
+both cases — but only Mullvad pays it on every refresh. Proton reads its settings
+once and then when the user asks, because `protonvpn` is Python and a spawn there
+costs the better part of a CPU-second; the panel is the only thing that draws
+them, and opening it forces a refresh anyway.
 
 The block is a drawer behind the hero, closed by default: settings are read once
 and then left alone, while the target list is why the panel gets opened. The

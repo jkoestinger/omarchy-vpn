@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/jkoestinger/omarchy-vpn/compare/v1.2.0...v1.2.1) (2026-08-18)
+
+
+### Fixed
+
+* Proton reads the status on a cadence and stops asking a signed-out CLI ([#20](https://github.com/jkoestinger/omarchy-vpn/issues/20)) ([71af038](https://github.com/jkoestinger/omarchy-vpn/commit/71af03860c60d3d22f77a2d67ea3d1ca9dedabcd)), closes [#19](https://github.com/jkoestinger/omarchy-vpn/issues/19)
+
 ## [1.2.0](https://github.com/jkoestinger/omarchy-vpn/compare/v1.1.0...v1.2.0) (2026-08-15)
 
 

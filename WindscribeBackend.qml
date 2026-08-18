@@ -413,8 +413,6 @@ Item {
     }
   }
 
-  // Something else is holding the CLI lock. The call did no work and returned
-  // no state, so nothing is concluded from it; the next poll asks again.
   function cliLocked(out, err) {
     return Windscribe.isWindscribeCliLocked(out) || Windscribe.isWindscribeCliLocked(err)
   }

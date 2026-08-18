@@ -26,6 +26,11 @@ Item {
   property var countries: []
   property bool countriesLoaded: false
   property var config: Proton.parseProtonConfig("")
+  // Same meaning as countriesLoaded: asked and answered, not answered well.
+  property bool _configLoaded: false
+  // Set the first time a subcommand is refused for want of an account, and the
+  // reason this backend stops asking. See noteAuth().
+  property bool signedOut: false
   property string actionStatus: ""
   property string lastError: ""
 
@@ -48,7 +53,9 @@ Item {
   readonly property string summary: Proton.protonSummary(status)
   readonly property var details: Proton.protonDetails(status)
   readonly property var favorites: Shared.favoriteCodes(setting("favoriteCountries", "CH,NL,US"))
-  readonly property string emptyText: countriesLoaded ? "No countries match." : "Loading countries…"
+  readonly property string emptyText: signedOut
+    ? Proton.PROTON_SIGNIN_HINT
+    : (countriesLoaded ? "No countries match." : "Loading countries…")
   // Server names carry their country: "NL#42" is the Netherlands row.
   readonly property string currentKey: {
     if (!connected) return ""
@@ -70,15 +77,82 @@ Item {
 
   function detect(force) {
     if (detectProcess.running) return
+    // `force` is the user asking again — opening the panel, pressing r — which
+    // is the one moment the answers below could have changed in a way they can
+    // see: they signed in at a terminal, or changed a setting from the CLI.
+    // Nothing else re-asks, because every one of these costs a Python start.
+    if (force === true) {
+      root._statusDue = true
+      root.signedOut = false
+      root.countriesLoaded = false
+      root._configLoaded = false
+    }
     if (_probed && force !== true) return
     detectProcess.running = true
   }
 
+  // Ticks of the controller's interval between status reads.
+  //
+  // Connected is every one. A tunnel that drops while the panel is closed leaves
+  // the chip claiming protection nobody has, and overstating protection is the
+  // one wrong answer here worth a Python start to avoid.
+  //
+  // Disconnected is every fourth. Understating it is harmless by comparison, and
+  // the only thing that turns disconnected into connected is somebody acting:
+  // through this widget, which re-reads on its own through settleTimer, or at a
+  // terminal, which the next slow tick catches within a minute.
+  //
+  // Signed out is never. The CLI cannot connect until somebody signs in, and
+  // that is a forced refresh — opening the panel — away.
+  readonly property int _statusEvery: signedOut ? 0 : (connected ? 1 : 4)
+  property int _sinceStatus: 0
+  // Ask on the next refresh whatever the cadence says. True at startup because
+  // the first thing a probe wants is an answer.
+  property bool _statusDue: true
+
+  // Every non-hidden backend is polled on the interval whether or not the panel
+  // is open, and `protonvpn` is Python: each invocation costs the best part of a
+  // CPU-second before it does any work. So the poll asks for the status alone
+  // once the other two have been answered, and asks for that on the cadence
+  // above rather than on every tick. Both of the others need an account, so
+  // signed out they are not asked at all.
   function refresh() {
-    if (!detected || statusProcess.running) return
-    statusProcess.running = true
-    if (!configProcess.running) configProcess.running = true
+    if (!detected) return
+
+    _sinceStatus += 1
+    if (_statusEvery > 0 && _sinceStatus >= _statusEvery) _statusDue = true
+
+    if (_statusDue && !statusProcess.running) {
+      _statusDue = false
+      _sinceStatus = 0
+      statusProcess.running = true
+    }
+
+    if (signedOut) return
+    if (!_configLoaded && !configProcess.running) configProcess.running = true
     if (!countriesLoaded && !countriesProcess.running) countriesProcess.running = true
+  }
+
+  // For the paths that have just changed something and need to see it land. The
+  // cadence is for the idle case; a settling action is not one.
+  function refreshNow() {
+    _statusDue = true
+    refresh()
+  }
+
+  // Latches the signed-out state from a refusal, and answers "was that a
+  // refusal" so callers can skip their success path. The CLI keeps refusing for
+  // as long as nobody signs in, and `protonvpn status` exits 0 throughout, so
+  // nothing else in the poll would ever notice.
+  function noteAuth(exitCode, out, err) {
+    if (exitCode === 0) {
+      root.signedOut = false
+      return false
+    }
+    if (!Proton.protonAuthRequired(String(err || "") + "\n" + String(out || ""))) return false
+    root.signedOut = true
+    root.lastError = Proton.PROTON_SIGNIN_HINT
+    return true
   }
 
   function setToggle(key, value) {
@@ -163,8 +237,7 @@ Item {
   // A command that exits clean but does not take — the CLI accepts it and then
   // lists the old value — would otherwise leave the switch showing the position
   // the user asked for, marked busy, for as long as the panel is open. Optimism
-  // gets a deadline: past it, the switches go back to what the CLI actually
-  // says, which is the whole point of not storing them here.
+  // gets a deadline.
   Timer {
     id: pendingTimer
     interval: 10000
@@ -186,7 +259,7 @@ Item {
     running: false
     onTriggered: {
       settleTimer.ticks += 1
-      root.refresh()
+      root.refreshNow()
       if (settleTimer.ticks >= 4) {
         settleTimer.ticks = 0
         settleTimer.running = false
@@ -215,7 +288,9 @@ Item {
     onExited: function(exitCode) {
       if (exitCode === 0) {
         root.applyStatus(String(statusStdout.text || ""))
-        root.lastError = ""
+        // Status succeeds while signed out, so clearing unconditionally would
+        // wipe the one line telling the user why the panel is empty.
+        root.lastError = root.signedOut ? Proton.PROTON_SIGNIN_HINT : ""
       } else {
         root.lastError = Shared.elide(String(statusStderr.text || statusStdout.text || "") || "Could not read Proton VPN status", 140)
       }
@@ -229,16 +304,21 @@ Item {
     stdout: StdioCollector { id: connectStdout; waitForEnd: true }
     stderr: StdioCollector { id: connectStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      var connectOut = String(connectStdout.text || "")
+      var connectErr = String(connectStderr.text || "")
+      var refused = root.noteAuth(exitCode, connectOut, connectErr)
       if (exitCode !== 0) {
         root._desired = -1
-        root.lastError = Shared.elide(String(connectStderr.text || connectStdout.text || "") || "Proton VPN command failed", 140)
+        if (!refused) {
+          root.lastError = Shared.elide(connectErr || connectOut || "Proton VPN command failed", 140)
+        }
       } else {
         root.lastError = ""
       }
       root.actionStatus = ""
       settleTimer.ticks = 0
       settleTimer.restart()
-      root.refresh()
+      root.refreshNow()
     }
   }
 
@@ -247,9 +327,15 @@ Item {
     running: false
     command: ["protonvpn", "config", "list"]
     stdout: StdioCollector { id: configStdout; waitForEnd: true }
+    stderr: StdioCollector { id: configStderr; waitForEnd: true }
     onExited: function(exitCode) {
+      var out = String(configStdout.text || "")
+      if (root.noteAuth(exitCode, out, String(configStderr.text || ""))) return
+      // Answered either way: a table this parser cannot read is a reason to show
+      // no switches, not to re-read it on every poll for the life of the shell.
+      root._configLoaded = true
       if (exitCode !== 0) return
-      root.applyConfig(String(configStdout.text || ""))
+      root.applyConfig(out)
     }
   }
 
@@ -278,13 +364,20 @@ Item {
     running: false
     command: ["protonvpn", "countries", "list"]
     stdout: StdioCollector { id: countriesStdout; waitForEnd: true }
+    stderr: StdioCollector { id: countriesStderr; waitForEnd: true }
     onExited: function(exitCode) {
-      if (exitCode !== 0) return
-      root.countries = Proton.parseProtonCountries(String(countriesStdout.text || ""))
+      var out = String(countriesStdout.text || "")
+      var err = String(countriesStderr.text || "")
+      if (root.noteAuth(exitCode, out, err)) return
+
+      var unreadable = "Could not read the country list. Check: protonvpn countries list"
       root.countriesLoaded = true
-      if (root.countries.length === 0) {
-        root.lastError = "Could not read the country list. Check: protonvpn countries list"
+      if (exitCode !== 0) {
+        root.lastError = Shared.elide(err || out || unreadable, 140)
+        return
       }
+      root.countries = Proton.parseProtonCountries(out)
+      if (root.countries.length === 0) root.lastError = unreadable
     }
   }
 }

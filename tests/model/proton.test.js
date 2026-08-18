@@ -114,3 +114,19 @@ test("favoriteCodes normalises and de-duplicates", () => {
   eq(Shared.favoriteCodes(" ch , NL ,ch, "), ["CH", "NL"])
   eq(Shared.favoriteCodes(null), [])
 })
+
+// Signed out, every subcommand that needs an account is refused this way and
+// exits 2, while `protonvpn status` exits 0 the whole time — so this is the
+// only thing that tells the backend to stop asking.
+test("protonAuthRequired reads the CLI's refusals", () => {
+  eq(Proton.protonAuthRequired(
+    "Error: Authentication required to view feature status. Please sign in with 'protonvpn signin'"), true)
+  eq(Proton.protonAuthRequired("Error: Authentication required to list countries."), true)
+  eq(Proton.protonAuthRequired("You are not logged in"), true)
+  eq(Proton.protonAuthRequired(""), false)
+  eq(Proton.protonAuthRequired(null), false)
+  // A refusal is not the same as a tool that is unwell, and only the first of
+  // these should stop the poll asking again.
+  eq(Proton.protonAuthRequired("Error: could not reach the Proton VPN API"), false)
+  eq(Proton.protonAuthRequired("Status: Disconnected"), false)
+})

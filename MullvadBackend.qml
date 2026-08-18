@@ -80,6 +80,9 @@ Item {
 
   function detect(force) {
     if (detectProcess.running) return
+    // Also the only thing that re-reads a relay list the CLI refused, since the
+    // guard below latches on the answer and not on the answer being usable.
+    if (force === true) relaysLoaded = false
     if (_probed && force !== true) return
     detectProcess.running = true
   }
@@ -207,8 +210,7 @@ Item {
   // A command that exits clean but does not take — the daemon accepts it and
   // then reports the old value — would otherwise leave the switch showing the
   // position the user asked for, marked busy, for as long as the panel is open.
-  // Optimism gets a deadline: past it, the switches go back to what the daemon
-  // actually says, which is the whole point of not storing them here.
+  // Optimism gets a deadline.
   Timer {
     id: pendingTimer
     interval: 10000
@@ -247,13 +249,6 @@ Item {
     interval: 0
     repeat: false
     onTriggered: root.runStage("connect", ["connect"])
-  }
-
-  Timer {
-    id: actionStatusTimer
-    interval: 2600
-    repeat: false
-    onTriggered: root.actionStatus = ""
   }
 
   Process {
@@ -332,13 +327,20 @@ Item {
     running: false
     command: ["mullvad", "relay", "list"]
     stdout: StdioCollector { id: relaysStdout; waitForEnd: true }
+    stderr: StdioCollector { id: relaysStderr; waitForEnd: true }
     onExited: function(exitCode) {
-      if (exitCode !== 0) return
-      root.relays = Mullvad.parseMullvadRelays(String(relaysStdout.text || ""))
+      // A refusal is an answer too. Returning here without latching left a
+      // daemon that was down — or a CLI that wanted an account — re-asked for
+      // the largest thing this tool prints on every poll, forever.
+      var unreadable = "Could not read the relay list. Check: mullvad relay list"
       root.relaysLoaded = true
-      if (root.relays.length === 0) {
-        root.lastError = "Could not read the relay list. Check: mullvad relay list"
+      if (exitCode !== 0) {
+        root.lastError = root.describeFailure(
+          String(relaysStderr.text || "") + "\n" + String(relaysStdout.text || ""), unreadable)
+        return
       }
+      root.relays = Mullvad.parseMullvadRelays(String(relaysStdout.text || ""))
+      if (root.relays.length === 0) root.lastError = unreadable
     }
   }
 

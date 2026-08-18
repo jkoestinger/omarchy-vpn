@@ -22,7 +22,6 @@ function parseProtonStatus(raw) {
     city: "",
     load: "",
     protocol: "",
-    ip: "",
     statusText: ""
   }
 
@@ -59,8 +58,6 @@ function parseProtonStatus(raw) {
       result.load = value
     } else if (key === "protocol") {
       result.protocol = value
-    } else if (key === "ip" || key === "ip address") {
-      result.ip = value
     }
   }
 
@@ -79,6 +76,22 @@ function parseProtonStatus(raw) {
 
   return result
 }
+
+// Anything that needs an account is refused the same way, whichever subcommand
+// asked. Signed out, `protonvpn countries list` exits 2 with:
+//
+//   Error: Authentication required to view feature status. Please sign in with 'protonvpn signin'
+//
+// `protonvpn status` still exits 0 and prints "Status: Disconnected", so the
+// poll notices nothing and keeps asking. Match on the phrases rather than the
+// whole sentence: the tail names whichever feature was asked for, and the
+// wording around it has moved between releases.
+function protonAuthRequired(text) {
+  return /authentication required|please sign\s?in|not (?:logged|signed)[- ]?in|sign in with/i.test(String(text || ""))
+}
+
+// Said in the CLI's own vocabulary, because the fix is a command the user runs.
+var PROTON_SIGNIN_HINT = "Signed out of Proton VPN. Sign in with: protonvpn signin"
 
 // `protonvpn countries list` prints a two-column table padded with spaces,
 // preceded by an optional "Server list is outdated, updating..." notice and a
