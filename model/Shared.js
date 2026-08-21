@@ -13,6 +13,10 @@ var GLYPH_BOLT = String.fromCodePoint(0xF04C5)
 var GLYPH_DICE = String.fromCodePoint(0xF01D5)
 var GLYPH_SWAP = String.fromCodePoint(0xF04E1)
 var GLYPH_SHIELD = String.fromCodePoint(0xF0498)
+// A shield with a lock in it: reads as neither the bare shield WireGuard uses
+// nor the bare padlock OpenVPN does, which is the point — the three sit next
+// to each other in the same list.
+var GLYPH_SHIELD_LOCK = String.fromCodePoint(0xF099D)
 var GLYPH_CHEVRON_DOWN = String.fromCodePoint(0xF0140)
 var GLYPH_CHEVRON_UP = String.fromCodePoint(0xF0143)
 var GLYPH_COG = String.fromCodePoint(0xF0493)

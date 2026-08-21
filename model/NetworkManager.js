@@ -5,11 +5,18 @@
 // the process plumbing lives in NetworkManagerBackend.qml.
 
 //
-// OpenVPN and WireGuard both live here, because on a desktop both are
-// NetworkManager profiles: same listing call, same `connection up` verb, same
-// teardown. What differs is how NetworkManager types them — OpenVPN is a `vpn`
-// connection with a service-type plugin behind it, WireGuard is its own
+// OpenVPN, WireGuard and OpenConnect all live here, because on a desktop all
+// three are NetworkManager profiles: same listing call, same teardown. What
+// differs is how NetworkManager types them — OpenVPN and OpenConnect are `vpn`
+// connections with a service-type plugin behind them, WireGuard is its own
 // connection type with the keys in the profile.
+//
+// OpenConnect differs from the other two in one way that reaches this file: it
+// cannot be brought up with `connection up` alone. Its cookie/gateway/gwcert/
+// resolve secrets are all flagged not-saved, so every activation needs a
+// secret agent to produce them, and the answer is a helper that runs the
+// openconnect auth dialog. That is why an OpenConnect target carries a whole
+// command rather than nmcli arguments.
 
 // `nmcli -t` escapes literal colons as "\:", so split on the first unescaped
 // one rather than on every colon.
@@ -77,7 +84,7 @@ function parseNmcliConnections(raw) {
 
 // `nmcli -t -f connection.uuid,vpn.service-type,vpn.data connection show <uuid>…`
 // prints one blank-line-separated block per connection, each line prefixed
-// with its field name. Returns { uuid: { serviceType, hasUsername } }.
+// with its field name. Returns { uuid: { serviceType, hasUsername, gateway } }.
 function parseNmcliVpnDetails(raw) {
   var details = {}
   var current = null
@@ -96,15 +103,33 @@ function parseNmcliVpnDetails(raw) {
     }
 
     var pair = splitNmcliLine(line)
-    if (!current) current = { uuid: "", serviceType: "", hasUsername: false }
+    if (!current) current = { uuid: "", serviceType: "", hasUsername: false, gateway: "" }
 
     if (pair[0] === "connection.uuid") current.uuid = pair[1]
     else if (pair[0] === "vpn.service-type") current.serviceType = pair[1]
-    else if (pair[0] === "vpn.data") current.hasUsername = hasVpnUsername(pair[1])
+    else if (pair[0] === "vpn.data") {
+      current.hasUsername = hasVpnUsername(pair[1])
+      current.gateway = vpnDataValue(pair[1], "gateway")
+    }
   }
   flush()
 
   return details
+}
+
+// One "key = value" out of vpn.data, matched on the whole key so that
+// `gateway-flags` is not mistaken for `gateway` — OpenConnect profiles carry
+// both, and the flags entry sorts first.
+function vpnDataValue(data, wanted) {
+  var entries = String(data || "").split(",")
+  for (var i = 0; i < entries.length; i++) {
+    var entry = entries[i]
+    var eq = entry.indexOf("=")
+    if (eq === -1) continue
+    if (entry.substring(0, eq).trim() !== wanted) continue
+    return entry.substring(eq + 1).trim()
+  }
+  return ""
 }
 
 // vpn.data is a comma-separated "key = value" list. OpenVPN's username lives
@@ -126,36 +151,76 @@ function isOpenVpnService(serviceType) {
   return String(serviceType || "").toLowerCase().indexOf("openvpn") !== -1
 }
 
+// "openconnect" does not contain "openvpn", so the two checks cannot both
+// claim the same profile.
+function isOpenConnectService(serviceType) {
+  return String(serviceType || "").toLowerCase().indexOf("openconnect") !== -1
+}
+
 function isWireGuard(profile) {
   return profile && profile.kind === "wireguard"
 }
 
+function isOpenConnect(profile) {
+  return profile && profile.kind === "openconnect"
+}
+
+// A username is an OpenVPN concern only. WireGuard keeps its keys in the
+// profile, and OpenConnect asks the gateway who you are as part of its own
+// authentication, so neither can be missing one.
+function needsUsername(profile) {
+  return !isWireGuard(profile) && !isOpenConnect(profile)
+}
+
 function nmKindLabel(profile) {
-  return isWireGuard(profile) ? "WireGuard" : "OpenVPN"
+  if (isWireGuard(profile)) return "WireGuard"
+  if (isOpenConnect(profile)) return "OpenConnect"
+  return "OpenVPN"
 }
 
 // The glyph carries the kind, since the rows otherwise look identical and the
-// two behave differently the moment credentials come up.
-function nmTargets(profiles) {
+// three behave differently the moment credentials come up.
+//
+// `authScript` is the openconnect helper's absolute path, which only the
+// backend knows. An OpenConnect target gets a `command` — a whole argv — where
+// the others get `args` to hand to nmcli, because its activation is not an
+// nmcli call. Without the helper an OpenConnect row is still listed and still
+// says what it is, but has nothing to run.
+function nmTargets(profiles, authScript) {
   var targets = []
   for (var i = 0; i < profiles.length; i++) {
     var profile = profiles[i]
     var wireguard = isWireGuard(profile)
+    var openconnect = isOpenConnect(profile)
 
-    targets.push({
+    var glyph = Shared.GLYPH_LOCK
+    if (wireguard) glyph = Shared.GLYPH_SHIELD
+    else if (openconnect) glyph = Shared.GLYPH_SHIELD_LOCK
+
+    var target = {
       key: "profile:" + profile.uuid,
       label: profile.name,
       detail: profile.active
         ? "Connected"
         // Only OpenVPN can be missing a username: WireGuard keeps its keys in
-        // the profile, so there is nothing for the user to have left out.
-        : (wireguard || profile.hasUsername ? nmKindLabel(profile) + " profile" : "No username set"),
-      glyph: wireguard ? Shared.GLYPH_SHIELD : Shared.GLYPH_LOCK,
+        // the profile, and OpenConnect settles identity with the gateway, so
+        // neither has anything for the user to have left out.
+        : (!needsUsername(profile) || profile.hasUsername
+            ? nmKindLabel(profile) + " profile"
+            : "No username set"),
+      glyph: glyph,
       args: ["connection", "up", "uuid", profile.uuid],
       uuid: profile.uuid,
       kind: profile.kind,
-      hasUsername: profile.hasUsername
-    })
+      hasUsername: profile.hasUsername,
+      gateway: profile.gateway || ""
+    }
+
+    if (openconnect && String(authScript || "") !== "") {
+      target.command = [String(authScript), profile.uuid]
+    }
+
+    targets.push(target)
   }
   return targets
 }
@@ -173,6 +238,11 @@ function nmDetails(profiles) {
     if (!profiles[i].active) continue
     rows.push(Shared.detail("Profile", profiles[i].name))
     rows.push(Shared.detail("Type", nmKindLabel(profiles[i])))
+    // Which gateway an OpenConnect profile reached, since a company commonly
+    // has several and the profile name rarely says which one.
+    if (isOpenConnect(profiles[i]) && profiles[i].gateway) {
+      rows.push(Shared.detail("Gateway", profiles[i].gateway))
+    }
   }
   if (rows.length > 0) rows.push(Shared.detail("Managed by", "NetworkManager"))
   return rows

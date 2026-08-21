@@ -4,7 +4,7 @@ A VPN widget for the Omarchy bar. One icon shows whether you are behind a
 tunnel; one panel connects, disconnects, and switches between the VPN tools you
 actually have installed.
 
-It supports **Proton VPN**, **Mullvad**, **Windscribe**, and the **OpenVPN** and
+It supports **Proton VPN**, **Mullvad**, **Windscribe**, and the **OpenVPN**, **OpenConnect** and
 **WireGuard** profiles NetworkManager holds. Only the tools
 that have something to offer appear — install none and the widget tells you so;
 have several and a chip row lets you switch between them.
@@ -91,7 +91,8 @@ Omarchy with its Quickshell desktop, plus at least one of:
   (`mullvad account login <number>`).
 - **Windscribe** — `windscribe-cli` with the Windscribe app running, logged in
   (`windscribe-cli login`).
-- **OpenVPN or WireGuard** — `nmcli`, plus `openvpn` or `wg` (wireguard-tools),
+- **OpenVPN, WireGuard or OpenConnect** — `nmcli`, plus `openvpn`, `wg` (wireguard-tools),
+  or `networkmanager-openconnect`,
   with at least one profile imported into NetworkManager.
 
 ## Settings
@@ -221,6 +222,32 @@ lands in the same terminal.
 If you are importing a Proton `.ovpn`: the username and password are the
 **OpenVPN/IKEv2** credentials from your Proton dashboard, not your Proton
 account login.
+
+### OpenConnect
+
+OpenConnect profiles need none of the above, and cannot use it: their
+`cookie`, `gateway`, `gwcert` and `resolve` secrets are all flagged not-saved,
+so there is nothing to pre-save and `nmcli --ask` cannot help — it would prompt
+for a session cookie by name. Instead, picking the profile raises the auth
+dialog that `networkmanager-openconnect` ships, which is the same window
+nm-applet would have raised. Enter your password there, complete whatever second
+factor the gateway asks for, and the tunnel comes up. Install
+`networkmanager-openconnect` and the profile appears; nm-applet is not needed.
+
+**Give the dialog a floating rule.** It is a small GTK window, and tiled it
+lands as a ~240×270 tile among whatever else is on the workspace — which reads
+as the widget having done nothing, while the panel sits on "Authenticating…"
+and further clicks are ignored until that attempt finishes. In
+`~/.config/hypr/hyprland.lua`:
+
+```lua
+o.window("^(nm-openconnect-auth-dialog)$", { float = true, center = true })
+```
+
+**Let the dialog remember your password.** Tick "Save passwords" in it. That
+one setting does more than it looks like: `networkmanager-openconnect` also
+gates keyring storage and form auto-submission on it, so with it off every page
+of the form has to be clicked through by hand each time.
 
 ## Troubleshooting
 

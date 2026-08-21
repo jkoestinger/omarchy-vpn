@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "VPN",
-    "description": "Detects installed VPN tools (Proton VPN, Mullvad, Windscribe, and NetworkManager's OpenVPN and WireGuard profiles) and switches between them from one bar icon.",
+    "description": "Detects installed VPN tools (Proton VPN, Mullvad, Windscribe, and NetworkManager's OpenVPN, WireGuard and OpenConnect profiles) and switches between them from one bar icon.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",
