@@ -177,6 +177,35 @@ every 15 seconds for the life of the shell. `protonAuthRequired` tells that
 refusal apart from a tool that is unwell, `signedOut` latches it, and the panel
 says `protonvpn signin` instead of `Loading countries…` forever.
 
+**Two `protonvpn` processes must never overlap.** Proton's client library is
+undocumentedly unsafe to invoke concurrently: each process loads the stored
+session — refresh token included — at startup and never re-reads it, and Proton
+rotates that token single-use. Two invocations straddling a token refresh means
+the winner spends the token and persists its replacement while the loser posts
+the one just spent; `/auth/refresh` answers 400, and proton-core reads a 400
+there as *this session is finished* and deletes it from the keyring, silently.
+What the user sees is Proton VPN signing itself out, usually noticed after a
+reboot ([#23](https://github.com/jkoestinger/omarchy-vpn/issues/23)).
+
+No guard inside the widget can prevent that, because the bar instantiates the
+widget once per monitor: three monitors are three copies of this backend on
+three timers, each blind to the others. A kernel file lock is not blind to them,
+so `protonCli()` wraps every invocation in `flock` on one file under
+`XDG_RUNTIME_DIR`, and the six call sites — status, config, countries, connect,
+disconnect, toggles — all go through it. `-w 60` rather than an unbounded wait,
+so a wedged CLI costs one poll instead of every poll after it.
+
+The lock makes overlap impossible; it does not make it cheap. Three reads
+started at once become a queue three deep per instance, long enough that one
+tick's commands are still draining when the next tick adds three more. So the
+poll asks for one thing at a time and starts the next from the previous one's
+exit — `protonNextRead()` decides which, `_pump()` runs it, and `_cliBusy` is
+what "this instance already has a call out" means. Nothing starts a process from
+inside another's `onExited`, because `running` has not gone false there yet;
+`pumpTimer` puts it one turn of the event loop later, which also collapses two
+exits landing together into one decision. A dropped chain is not fatal: the
+controller's next `refresh()` starts a new one.
+
 **Settings are read, never owned.** `toggles` always reports what the tool
 itself last said, and the widget stores no copy — nothing in `manifest.json`
 asserts a desired value at startup. Turning lockdown on from the Mullvad CLI

@@ -110,34 +110,56 @@ Item {
   // the first thing a probe wants is an answer.
   property bool _statusDue: true
 
+  // Anything this backend runs, including the user's connects and toggles.
+  // Every one of them queues behind the same lock, so the useful question is
+  // never "is this process free" but "is this instance already holding a slot".
+  readonly property bool _cliBusy: statusProcess.running || configProcess.running
+    || countriesProcess.running || connectProcess.running || toggleProcess.running
+
   // Every non-hidden backend is polled on the interval whether or not the panel
   // is open, and `protonvpn` is Python: each invocation costs the best part of a
   // CPU-second before it does any work. So the poll asks for the status alone
   // once the other two have been answered, and asks for that on the cadence
-  // above rather than on every tick. Both of the others need an account, so
-  // signed out they are not asked at all.
+  // above rather than on every tick.
   function refresh() {
     if (!detected) return
 
     _sinceStatus += 1
     if (_statusEvery > 0 && _sinceStatus >= _statusEvery) _statusDue = true
 
-    if (_statusDue && !statusProcess.running) {
+    _pump()
+  }
+
+  // Starts the one read the poll owes next, if this instance has nothing out.
+  // Every read ends by asking again, so the tick's work drains as a chain; the
+  // controller's next refresh() is only what restarts a chain that ended.
+  function _pump() {
+    if (!detected) return
+
+    var next = Proton.protonNextRead({
+      busy: _cliBusy,
+      statusDue: _statusDue,
+      signedOut: signedOut,
+      configLoaded: _configLoaded,
+      countriesLoaded: countriesLoaded
+    })
+
+    if (next === "status") {
       _statusDue = false
       _sinceStatus = 0
       statusProcess.running = true
+    } else if (next === "config") {
+      configProcess.running = true
+    } else if (next === "countries") {
+      countriesProcess.running = true
     }
-
-    if (signedOut) return
-    if (!_configLoaded && !configProcess.running) configProcess.running = true
-    if (!countriesLoaded && !countriesProcess.running) countriesProcess.running = true
   }
 
   // For the paths that have just changed something and need to see it land. The
   // cadence is for the idle case; a settling action is not one.
   function refreshNow() {
     _statusDue = true
-    refresh()
+    pumpTimer.restart()
   }
 
   // Latches the signed-out state from a refusal, and answers "was that a
@@ -168,7 +190,7 @@ Item {
 
     lastError = ""
     _toggleKey = key
-    toggleProcess.command = ["protonvpn"].concat(args)
+    toggleProcess.command = Proton.protonCli(args)
     toggleProcess.running = true
     pendingTimer.restart()
   }
@@ -209,7 +231,7 @@ Item {
     _desired = 1
     lastError = ""
     actionStatus = "Connecting to " + target.label + "…"
-    connectProcess.command = ["protonvpn", "connect"].concat(target.args || [])
+    connectProcess.command = Proton.protonCli(["connect"].concat(target.args || []))
     connectProcess.running = true
   }
 
@@ -218,7 +240,7 @@ Item {
     _desired = 0
     lastError = ""
     actionStatus = "Disconnecting…"
-    connectProcess.command = ["protonvpn", "disconnect"]
+    connectProcess.command = Proton.protonCli(["disconnect"])
     connectProcess.running = true
   }
 
@@ -247,6 +269,18 @@ Item {
       root._pendingToggles = ({})
       root.lastError = "Proton VPN did not apply that setting."
     }
+  }
+
+  // Nothing may start a `protonvpn` from inside another one's onExited: that
+  // process is still running as far as `running` is concerned, so _pump would
+  // read the instance as busy and drop the rest of the chain until the next
+  // tick. One turn of the event loop later it has settled, and two exits
+  // landing together collapse into one decision rather than two.
+  Timer {
+    id: pumpTimer
+    interval: 0
+    repeat: false
+    onTriggered: root._pump()
   }
 
   // The CLI reports the new state a beat after the command returns, so re-poll
@@ -282,7 +316,7 @@ Item {
   Process {
     id: statusProcess
     running: false
-    command: ["protonvpn", "status"]
+    command: Proton.protonCli(["status"])
     stdout: StdioCollector { id: statusStdout; waitForEnd: true }
     stderr: StdioCollector { id: statusStderr; waitForEnd: true }
     onExited: function(exitCode) {
@@ -294,6 +328,7 @@ Item {
       } else {
         root.lastError = Shared.elide(String(statusStderr.text || statusStdout.text || "") || "Could not read Proton VPN status", 140)
       }
+      pumpTimer.restart()
     }
   }
 
@@ -325,17 +360,17 @@ Item {
   Process {
     id: configProcess
     running: false
-    command: ["protonvpn", "config", "list"]
+    command: Proton.protonCli(["config", "list"])
     stdout: StdioCollector { id: configStdout; waitForEnd: true }
     stderr: StdioCollector { id: configStderr; waitForEnd: true }
     onExited: function(exitCode) {
       var out = String(configStdout.text || "")
-      if (root.noteAuth(exitCode, out, String(configStderr.text || ""))) return
+      var refusedConfig = root.noteAuth(exitCode, out, String(configStderr.text || ""))
       // Answered either way: a table this parser cannot read is a reason to show
       // no switches, not to re-read it on every poll for the life of the shell.
-      root._configLoaded = true
-      if (exitCode !== 0) return
-      root.applyConfig(out)
+      if (!refusedConfig) root._configLoaded = true
+      if (exitCode === 0) root.applyConfig(out)
+      pumpTimer.restart()
     }
   }
 
@@ -352,7 +387,10 @@ Item {
         root.clearPending(root._toggleKey)
       }
       root._toggleKey = ""
-      if (!configProcess.running) configProcess.running = true
+      // Re-read the switches: the tool's answer is the only one this backend
+      // shows. Through the chain, so it queues rather than racing the poll.
+      root._configLoaded = false
+      pumpTimer.restart()
     }
   }
 
@@ -362,22 +400,26 @@ Item {
   Process {
     id: countriesProcess
     running: false
-    command: ["protonvpn", "countries", "list"]
+    command: Proton.protonCli(["countries", "list"])
     stdout: StdioCollector { id: countriesStdout; waitForEnd: true }
     stderr: StdioCollector { id: countriesStderr; waitForEnd: true }
     onExited: function(exitCode) {
       var out = String(countriesStdout.text || "")
       var err = String(countriesStderr.text || "")
-      if (root.noteAuth(exitCode, out, err)) return
+      if (root.noteAuth(exitCode, out, err)) {
+        pumpTimer.restart()
+        return
+      }
 
       var unreadable = "Could not read the country list. Check: protonvpn countries list"
       root.countriesLoaded = true
       if (exitCode !== 0) {
         root.lastError = Shared.elide(err || out || unreadable, 140)
-        return
+      } else {
+        root.countries = Proton.parseProtonCountries(out)
+        if (root.countries.length === 0) root.lastError = unreadable
       }
-      root.countries = Proton.parseProtonCountries(out)
-      if (root.countries.length === 0) root.lastError = unreadable
+      pumpTimer.restart()
     }
   }
 }
