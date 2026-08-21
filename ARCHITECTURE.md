@@ -16,7 +16,7 @@ surrounding workflow.
 | `ProtonBackend.qml` | Proton VPN, via the `protonvpn` CLI |
 | `MullvadBackend.qml` | Mullvad, via the `mullvad` CLI |
 | `WindscribeBackend.qml` | Windscribe, via `windscribe-cli` |
-| `NetworkManagerBackend.qml` | OpenVPN and WireGuard, via NetworkManager |
+| `NetworkManagerBackend.qml` | OpenVPN, WireGuard and OpenConnect, via NetworkManager |
 | `model/Shared.js` | Helpers every backend leans on, and the widget's own settings |
 | `model/Proton.js`, `model/Mullvad.js`, `model/Windscribe.js`, `model/NetworkManager.js` | Pure parsing and row-building, one file per tool. No QML, no side effects |
 
@@ -40,7 +40,7 @@ duck-types, so a backend that omits something simply renders as blank.
 |----------|---------|
 | `backendId` | Stable key used by settings and IPC (`proton`, `mullvad`, `windscribe`, `networkmanager`) |
 | `label` | Name on the switcher chip and hero. Also what `preferredBackend` stores, so it must match that enum in `manifest.json` exactly |
-| `installNames` | What a user would install to make this backend useful, as a list. The panel joins them into its "install something" line when no tool is detected. Usually one name and the same as `label` — NetworkManager is the exception, offering `["OpenVPN", "WireGuard"]`, because nobody installs a connection manager to get a VPN |
+| `installNames` | What a user would install to make this backend useful, as a list. The panel joins them into its "install something" line when no tool is detected. Usually one name and the same as `label` — NetworkManager is the exception, offering `["OpenVPN", "WireGuard", "OpenConnect"]`, because nobody installs a connection manager to get a VPN |
 | `glyph` | Nerd Font character for the hero icon |
 | `supportsFilter`, `filterPlaceholder` | Whether the panel shows its filter field |
 | `filter` | The panel writes the current filter text here |
@@ -176,6 +176,35 @@ happily, while `config list` and `countries list` each exit 2 with
 every 15 seconds for the life of the shell. `protonAuthRequired` tells that
 refusal apart from a tool that is unwell, `signedOut` latches it, and the panel
 says `protonvpn signin` instead of `Loading countries…` forever.
+
+**Two `protonvpn` processes must never overlap.** Proton's client library is
+undocumentedly unsafe to invoke concurrently: each process loads the stored
+session — refresh token included — at startup and never re-reads it, and Proton
+rotates that token single-use. Two invocations straddling a token refresh means
+the winner spends the token and persists its replacement while the loser posts
+the one just spent; `/auth/refresh` answers 400, and proton-core reads a 400
+there as *this session is finished* and deletes it from the keyring, silently.
+What the user sees is Proton VPN signing itself out, usually noticed after a
+reboot ([#23](https://github.com/jkoestinger/omarchy-vpn/issues/23)).
+
+No guard inside the widget can prevent that, because the bar instantiates the
+widget once per monitor: three monitors are three copies of this backend on
+three timers, each blind to the others. A kernel file lock is not blind to them,
+so `protonCli()` wraps every invocation in `flock` on one file under
+`XDG_RUNTIME_DIR`, and the six call sites — status, config, countries, connect,
+disconnect, toggles — all go through it. `-w 60` rather than an unbounded wait,
+so a wedged CLI costs one poll instead of every poll after it.
+
+The lock makes overlap impossible; it does not make it cheap. Three reads
+started at once become a queue three deep per instance, long enough that one
+tick's commands are still draining when the next tick adds three more. So the
+poll asks for one thing at a time and starts the next from the previous one's
+exit — `protonNextRead()` decides which, `_pump()` runs it, and `_cliBusy` is
+what "this instance already has a call out" means. Nothing starts a process from
+inside another's `onExited`, because `running` has not gone false there yet;
+`pumpTimer` puts it one turn of the event loop later, which also collapses two
+exits landing together into one decision. A dropped chain is not fatal: the
+controller's next `refresh()` starts a new one.
 
 **Settings are read, never owned.** `toggles` always reports what the tool
 itself last said, and the widget stores no copy — nothing in `manifest.json`
@@ -323,20 +352,36 @@ tunnel is down; the setting itself is read separately with
 `mullvad lockdown-mode get`, because the case that matters — Mullvad connected,
 another backend about to take over — is exactly when the payload omits it.
 
-**Why OpenVPN and WireGuard share one backend.** Same listing call, same
-`connection up` verb, same teardown, same secret-agent problem, and no settings
-of their own on either side. Two chips would have meant two views of one
-manager. NetworkManager types them differently — OpenVPN is a `vpn` connection
-with a service-type plugin behind it, WireGuard is its own connection type with
-the keys in the profile — and that difference is carried on each row as `kind`,
-which picks the glyph and decides whether the username check applies.
+**Why OpenVPN, WireGuard and OpenConnect share one backend.** Same listing call,
+same teardown, same secret-agent problem, and no settings of their own on any
+side. Three chips would have meant three views of one manager. NetworkManager
+types them differently — OpenVPN and OpenConnect are `vpn` connections with a
+service-type plugin behind them, WireGuard is its own connection type with the
+keys in the profile — and that difference is carried on each row as `kind`,
+which picks the glyph, decides whether the username check applies, and decides
+whether activation is an nmcli call at all.
+
+**Why OpenConnect needs a helper.** It is the one kind that cannot be brought
+up with `connection up`. Its `cookie`, `gateway`, `gwcert` and `resolve`
+secrets are all flagged not-saved, so every activation needs a secret agent to
+produce them, and `nmcli --ask` cannot stand in: it prompts for those four by
+name, and nobody can type a session cookie. What normally answers is nm-applet,
+whose whole contribution for OpenConnect is to run the auth dialog that
+networkmanager-openconnect ships and hand the results back.
+`bin/omarchy-openconnect-auth` does the same thing without the tray icon, so an
+OpenConnect target carries a whole `command` where the other kinds carry `args`
+for nmcli. The dialog is the same window the user already knows, which is the
+point: it is generated from the gateway's own XML and copes with Duo, cert
+prompts and form revisions that a reimplementation would break on.
 
 **NetworkManager discovery.** Two passes. `nmcli -t -f
 NAME,UUID,TYPE,ACTIVE,FILENAME connection show` gives every connection; the
 `vpn` and `wireguard` rows are kept. A second call over just the `vpn` uuids
-fetches `vpn.service-type` (to keep only OpenVPN ones) and `vpn.data` (to check
-for a username). WireGuard rows skip that pass entirely — they are already known
-to be WireGuard and have no username to be missing. The username matters because
+fetches `vpn.service-type` (which sorts OpenVPN from OpenConnect, and drops a
+third plugin's profile) and `vpn.data` (to check for a username, and to read
+the OpenConnect gateway). WireGuard rows skip that pass entirely — they are
+already known to be WireGuard and have no username to be missing. The username
+matters because
 NetworkManager keeps it outside the secrets store, so `nmcli --ask` never
 prompts for it — a profile without one authenticates as the empty user and the
 server answers `AUTH_FAILED`. The backend detects that case and reports the fix
@@ -351,7 +396,7 @@ anything can run it. With no eligible profile the backend disappears, and with
 it the chip, the hero, and the empty list they led to; the import instructions
 move to the panel's `setupHint` line so nothing is lost. Because `detected` now
 follows the profile list, the question is settled by `refresh()` rather than by
-`detect()`, which runs its three binary probes once and is a no-op after that.
+`detect()`, which runs its four probes once and is a no-op after that.
 
 **FILENAME is what keeps other tools' tunnels out.** When something brings up a
 WireGuard interface itself — Mullvad's `wg0-mullvad` — NetworkManager adopts the

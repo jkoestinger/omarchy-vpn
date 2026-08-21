@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "jkoestinger.vpn",
   "name": "VPN",
-  "version": "1.2.1",
+  "version": "1.3.0",
   "author": "Justin",
   "license": "MIT",
   "description": "VPN status and switching in the Omarchy bar, across whichever VPN tools are installed.",
@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "VPN",
-    "description": "Detects installed VPN tools (Proton VPN, Mullvad, Windscribe, and NetworkManager's OpenVPN and WireGuard profiles) and switches between them from one bar icon.",
+    "description": "Detects installed VPN tools (Proton VPN, Mullvad, Windscribe, and NetworkManager's OpenVPN, WireGuard and OpenConnect profiles) and switches between them from one bar icon.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",

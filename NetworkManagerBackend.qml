@@ -4,9 +4,10 @@ import "model/Shared.js" as Shared
 import "model/NetworkManager.js" as NetworkManager
 
 // NetworkManager backend: every tunnel NetworkManager owns, which on a desktop
-// means OpenVPN and WireGuard. Neither has a session daemon of its own to ask —
-// NetworkManager is what imports and stores both `.ovpn` files and WireGuard
-// configs. Implements the backend contract documented in VpnController.qml.
+// means OpenVPN, WireGuard and OpenConnect. None has a session daemon of its
+// own to ask — NetworkManager is what imports and stores `.ovpn` files,
+// WireGuard configs and AnyConnect profiles alike. Implements the backend
+// contract documented in VpnController.qml.
 Item {
   id: root
   visible: false
@@ -16,9 +17,15 @@ Item {
 
   readonly property string backendId: "networkmanager"
   readonly property string label: "NetworkManager"
-  // Two names, because this backend is the only way to reach either protocol
-  // and the label names the manager rather than anything you would install.
-  readonly property var installNames: ["OpenVPN", "WireGuard"]
+  // Three names, because this backend is the only way to reach any of the
+  // protocols and the label names the manager rather than anything you would
+  // install.
+  readonly property var installNames: ["OpenVPN", "WireGuard", "OpenConnect"]
+
+  // The helper that authenticates an OpenConnect profile. Resolved here
+  // because only the backend knows where the plugin is installed.
+  readonly property string openconnectAuth:
+    Qt.resolvedUrl("bin/omarchy-openconnect-auth").toString().replace(/^file:\/\//, "")
   readonly property string glyph: Shared.GLYPH_VPN
   readonly property bool supportsFilter: false
   readonly property string filterPlaceholder: ""
@@ -32,10 +39,12 @@ Item {
   // gets the chip, and a profile of a kind you cannot run simply never appears.
   property bool _openvpnPresent: false
   property bool _wireguardPresent: false
+  property bool _openconnectPresent: false
   property int _probesDone: 0
   property bool _probed: false
 
-  readonly property bool _toolsPresent: _nmcliPresent && (_openvpnPresent || _wireguardPresent)
+  readonly property bool _toolsPresent:
+    _nmcliPresent && (_openvpnPresent || _wireguardPresent || _openconnectPresent)
   // Having the tools is not having anything to connect to. NetworkManager is
   // the one backend whose list can be legitimately empty on a working install,
   // and a chip leading to an empty list is a chip worth not drawing.
@@ -62,7 +71,7 @@ Item {
   readonly property bool busy: _working || listProcess.running || typesProcess.running
   readonly property string summary: NetworkManager.nmSummary(profiles)
   readonly property var details: NetworkManager.nmDetails(profiles)
-  readonly property var targets: NetworkManager.nmTargets(profiles)
+  readonly property var targets: NetworkManager.nmTargets(profiles, root.openconnectAuth)
   readonly property string emptyText: "No profiles yet. Import one with: nmcli connection import type openvpn file <config.ovpn> — or type wireguard file <config.conf>"
   readonly property string currentKey: {
     var profile = NetworkManager.activeNmProfile(profiles)
@@ -81,17 +90,19 @@ Item {
   // poll a tool the user switched off. The binaries do not come and go, so once
   // probed this is nothing rather than three more processes every poll.
   function detect(force) {
-    if (nmcliProbe.running || openvpnProbe.running || wireguardProbe.running) return
+    if (nmcliProbe.running || openvpnProbe.running || wireguardProbe.running
+        || openconnectProbe.running) return
     if (_probed && force !== true) return
     _probesDone = 0
     nmcliProbe.running = true
     openvpnProbe.running = true
     wireguardProbe.running = true
+    openconnectProbe.running = true
   }
 
   function _probeFinished() {
     root._probesDone += 1
-    if (root._probesDone < 3) return
+    if (root._probesDone < 4) return
     root._probed = true
     if (root._toolsPresent) root.refresh()
   }
@@ -111,17 +122,30 @@ Item {
     // one — it lives in vpn.data. Without it the profile authenticates as the
     // empty user and the server rejects it, so point at the fix rather than
     // open a password prompt that cannot succeed. WireGuard has no username at
-    // all, so this is not its problem.
-    if (target.kind !== "wireguard" && target.hasUsername === false) {
+    // all, and OpenConnect settles identity with the gateway during its own
+    // authentication, so this is neither of their problems.
+    if (NetworkManager.needsUsername(target) && target.hasUsername === false) {
       lastError = "\"" + target.label + "\" has no username. Set one with: nmcli connection modify "
         + target.label + " +vpn.data username=<user>"
+      return
+    }
+
+    // An OpenConnect profile is unreachable without the auth dialog, and the
+    // helper is what finds it. Saying so beats an activation that fails with
+    // nmcli complaining about secrets nobody could have supplied.
+    if (target.kind === "openconnect" && !target.command) {
+      lastError = "\"" + target.label + "\" needs the OpenConnect auth dialog. Install networkmanager-openconnect."
       return
     }
 
     _desired = 1
     _pendingTarget = target
     lastError = ""
-    actionStatus = "Connecting to " + target.label + "…"
+    // OpenConnect waits on a person at a dialog rather than on the network, and
+    // that wait is unbounded — a Duo approval can sit on a phone for a minute.
+    actionStatus = target.kind === "openconnect"
+      ? "Authenticating with " + (target.gateway || target.label) + "…"
+      : "Connecting to " + target.label + "…"
 
     // NetworkManager will happily run two tunnels at once, and picking one
     // profile is never a request for both. The controller only enforces this
@@ -132,9 +156,17 @@ Item {
       connectProcess.command = ["nmcli", "connection", "down", "uuid", active.uuid]
     } else {
       _stage = "final"
-      connectProcess.command = ["nmcli"].concat(target.args || [])
+      connectProcess.command = root.activation(target)
     }
     connectProcess.running = true
+  }
+
+  // A target either names its own program or hands arguments to nmcli. Only
+  // OpenConnect does the former, because its activation runs the auth dialog
+  // first and cannot be spelled as an nmcli invocation.
+  function activation(target) {
+    if (target && target.command) return target.command
+    return ["nmcli"].concat((target && target.args) || [])
   }
 
   function connectPending() {
@@ -144,7 +176,7 @@ Item {
       return
     }
     root._stage = "final"
-    connectProcess.command = ["nmcli"].concat(target.args || [])
+    connectProcess.command = root.activation(target)
     connectProcess.running = true
   }
 
@@ -181,7 +213,9 @@ Item {
   // A profile is only eligible if the tool that carries its kind is installed:
   // NetworkManager lists an OpenVPN profile whether or not anything can run it.
   function runnable(profile) {
-    return profile.kind === "wireguard" ? _wireguardPresent : _openvpnPresent
+    if (profile.kind === "wireguard") return _wireguardPresent
+    if (profile.kind === "openconnect") return _openconnectPresent
+    return _openvpnPresent
   }
 
   function applyProfiles(list) {
@@ -257,6 +291,21 @@ Item {
     running: true
     onExited: function(exitCode) {
       root._wireguardPresent = exitCode === 0
+      root._probeFinished()
+    }
+  }
+
+  // What OpenConnect needs is not a command on PATH but the auth dialog that
+  // networkmanager-openconnect ships, and distributions disagree about where
+  // that lives. The helper is asked, so the search exists in one place rather
+  // than being restated as a path here that could drift out of agreement with
+  // the connect that depends on it.
+  Process {
+    id: openconnectProbe
+    command: [root.openconnectAuth, "--dialog-path"]
+    running: true
+    onExited: function(exitCode) {
+      root._openconnectPresent = exitCode === 0
       root._probeFinished()
     }
   }
@@ -359,17 +408,27 @@ Item {
         var candidate = listProcess.pending[i]
 
         // WireGuard skipped the second pass, so it is kept as it stands. A
-        // `vpn` row survives only if OpenVPN is the plugin behind it — some
-        // other plugin's profile is not something this backend can drive.
+        // `vpn` row survives only if a plugin this backend can drive is behind
+        // it — some third plugin's profile is not something it can.
         if (candidate.kind === "wireguard") {
           usable.push(candidate)
           continue
         }
 
         var detail = details[candidate.uuid]
-        if (!detail || !NetworkManager.isOpenVpnService(detail.serviceType)) continue
+        if (!detail) continue
+
+        // The second pass is where a `vpn` row learns which plugin it is, so
+        // it is also where OpenConnect stops being indistinguishable from
+        // OpenVPN. Everything downstream keys off `kind`.
+        if (NetworkManager.isOpenConnectService(detail.serviceType)) {
+          candidate.kind = "openconnect"
+        } else if (!NetworkManager.isOpenVpnService(detail.serviceType)) {
+          continue
+        }
 
         candidate.hasUsername = detail.hasUsername
+        candidate.gateway = detail.gateway
         usable.push(candidate)
       }
       root.applyProfiles(usable)
@@ -398,7 +457,12 @@ Item {
       if (exitCode !== 0) {
         root._desired = -1
         var target = root._pendingTarget
-        if (root.missingSecrets(output) && target && target.uuid) {
+        // OpenConnect has already had its conversation, in the auth dialog the
+        // helper raised. Sending it to a terminal would offer `nmcli --ask`,
+        // which prompts for a session cookie and a certificate fingerprint by
+        // name — nothing a person can type. Its own failure is the honest one.
+        var interactive = target && target.kind !== "openconnect"
+        if (interactive && root.missingSecrets(output) && target.uuid) {
           root.lastError = "This profile needs credentials — opening a terminal to enter them."
           root.authRequired("nmcli --ask connection up uuid " + target.uuid)
         } else {

@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+# Bring up a NetworkManager OpenConnect profile without nm-applet.
+#
+# NetworkManager holds openconnect's cookie/gateway/gwcert/resolve as "not
+# saved" secrets, so activating the profile needs a secret agent to produce
+# them every time. nm-applet is normally that agent; all it does for
+# openconnect is run the auth dialog below and hand the results back. This
+# does the same thing, so the bar can drive a connect with no tray icon.
+
+set -euo pipefail
+
+readonly SERVICE="org.freedesktop.NetworkManager.openconnect"
+
+die() {
+  printf '%s\n' "$*" >&2
+  exit 1
+}
+
+# networkmanager-openconnect does not agree with itself about where this lives:
+# Arch puts it in /usr/lib, Fedora in /usr/libexec, Debian under a multiarch
+# directory. Even on this machine the package's editor libraries sit in
+# /usr/lib/NetworkManager/ while the dialog is one level up, so there is no
+# single directory to point at.
+#
+# Runs in a command substitution, so it reports failure by exit code rather
+# than calling die: an exit from a subshell would not stop the caller, and the
+# caller would go on to report a second, contradictory reason.
+#   1  nothing found
+#   2  the override is set but unusable
+find_auth_dialog() {
+  local candidate
+
+  # -x alone is not enough: it is true of any searchable directory, so an
+  # override pointing at /tmp would be accepted and then fail to execute.
+  if [[ -n ${OMARCHY_OPENCONNECT_AUTH_DIALOG:-} ]]; then
+    [[ -f $OMARCHY_OPENCONNECT_AUTH_DIALOG && -x $OMARCHY_OPENCONNECT_AUTH_DIALOG ]] || return 2
+    printf '%s\n' "$OMARCHY_OPENCONNECT_AUTH_DIALOG"
+    return 0
+  fi
+
+  for candidate in \
+    /usr/lib/nm-openconnect-auth-dialog \
+    /usr/libexec/nm-openconnect-auth-dialog \
+    /usr/lib/NetworkManager/nm-openconnect-auth-dialog \
+    /usr/lib/networkmanager/nm-openconnect-auth-dialog \
+    /usr/lib/*/nm-openconnect-auth-dialog \
+    /usr/local/lib/nm-openconnect-auth-dialog; do
+    [[ -f $candidate && -x $candidate ]] && {
+      printf '%s\n' "$candidate"
+      return 0
+    }
+  done
+
+  return 1
+}
+
+usage() {
+  cat >&2 <<'EOF'
+usage: omarchy-openconnect-auth <name-or-uuid> [options]
+       omarchy-openconnect-auth --dialog-path
+
+  --dialog-path  print the auth dialog this would run and exit; fails if
+                 none is installed. Takes no connection.
+  --dry-run      print the auth-dialog payload and exit; runs no dialog,
+                 contacts no gateway
+  --probe        run the auth dialog and report which secrets came back,
+                 redacting the values; activates nothing
+  --blank-lines  separate DATA_KEY/DATA_VAL pairs with a blank line
+  --keep-open    leave the secrets file behind for inspection (insecure)
+
+Set OMARCHY_OPENCONNECT_AUTH_DIALOG to override dialog discovery.
+EOF
+  exit 64
+}
+
+target=""
+dry_run=0
+probe=0
+blank_lines=0
+keep_open=0
+show_dialog_path=0
+
+while (($#)); do
+  case "$1" in
+    --dialog-path) show_dialog_path=1 ;;
+    --dry-run) dry_run=1 ;;
+    --probe) probe=1 ;;
+    --blank-lines) blank_lines=1 ;;
+    --keep-open) keep_open=1 ;;
+    -h | --help) usage ;;
+    -*) die "unknown option: $1" ;;
+    *)
+      [[ -n $target ]] && die "only one connection may be given"
+      target="$1"
+      ;;
+  esac
+  shift
+done
+
+resolve_auth_dialog() {
+  local found status
+  found="$(find_auth_dialog)" && {
+    printf '%s\n' "$found"
+    return 0
+  }
+
+  status=$?
+  ((status == 2)) &&
+    die "OMARCHY_OPENCONNECT_AUTH_DIALOG is set but not executable: $OMARCHY_OPENCONNECT_AUTH_DIALOG"
+  die "no nm-openconnect-auth-dialog found (install networkmanager-openconnect)"
+}
+
+# The widget asks this to decide whether it can offer a connect at all, so the
+# search lives in one place instead of being restated in QML.
+if ((show_dialog_path)); then
+  resolve_auth_dialog
+  exit 0
+fi
+
+[[ -n $target ]] || usage
+
+AUTH_DIALOG="$(resolve_auth_dialog)"
+
+uuid="$(nmcli --get-values connection.uuid connection show "$target" 2>/dev/null)" ||
+  die "no such connection: $target"
+name="$(nmcli --get-values connection.id connection show uuid "$uuid")"
+service="$(nmcli --get-values vpn.service-type connection show uuid "$uuid")"
+
+[[ $service == "$SERVICE" ]] ||
+  die "\"$name\" is not an openconnect profile (vpn.service-type=$service)"
+
+# The dialog reads its own preferences out of the *secrets*, not the data:
+# whether to save passwords, which host was used last, whether to start
+# connecting without being asked. Sending only DATA_KEY left it with none of
+# them, which is why "Save passwords" came up unticked however many times it
+# had been ticked, and why the host was never remembered.
+#
+# Only these three are forwarded. The rest of the secrets are the credentials
+# the dialog is being run to *obtain* — a stale cookie is of no use to it and
+# could only confuse a fresh authentication. They are also long opaque blobs,
+# where the "key = value, ..." format nmcli prints stops being safe to split.
+readonly DIALOG_PREFS=(save_passwords lasthost autoconnect)
+
+# Reads one value out of that line without splitting the whole thing: anchored
+# at the start or at a ", " separator, and stopping at the next comma. Sound
+# for these three, whose values are yes/no and a hostname.
+saved_secret() {
+  local key="$1" secrets="$2"
+  [[ $secrets =~ (^|,[[:space:]])$key[[:space:]]*=[[:space:]]*([^,]*) ]] || return 1
+  printf '%s' "${BASH_REMATCH[2]}"
+}
+
+# vpn.data comes back as one line of "key = value" pairs joined by ", ".
+# openconnect's values are bare tokens (hostnames, yes/no, small integers), so
+# splitting on the separators is safe here in a way it would not be in general.
+build_payload() {
+  local data secrets pair key value sep=""
+  data="$(nmcli --get-values vpn.data connection show uuid "$uuid")"
+  secrets="$(nmcli --show-secrets --get-values vpn.secrets connection show uuid "$uuid" 2>/dev/null || true)"
+  ((blank_lines)) && sep=$'\n'
+
+  local IFS=,
+  for pair in $data; do
+    key="${pair%%=*}"
+    value="${pair#*=}"
+    key="${key#"${key%%[![:space:]]*}"}"
+    key="${key%"${key##*[![:space:]]}"}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    [[ -n $key ]] || continue
+    printf 'DATA_KEY=%s\nDATA_VAL=%s\n%s' "$key" "$value" "$sep"
+  done
+
+  # Secrets first, since that is where the dialog's own writes land, then
+  # vpn.data as a fallback: a preference can then be set with plain nmcli on a
+  # profile that has never been through the dialog, which is the only way to
+  # turn one on before the first connect. Either way it goes out as a secret,
+  # because that is the half the dialog reads.
+  unset IFS
+  for key in "${DIALOG_PREFS[@]}"; do
+    value="$(saved_secret "$key" "$secrets")" ||
+      value="$(saved_secret "$key" "$data")" ||
+      continue
+    [[ -n $value ]] || continue
+    printf 'SECRET_KEY=%s\nSECRET_VAL=%s\n%s' "$key" "$value" "$sep"
+  done
+
+  printf 'DONE\n'
+}
+
+payload="$(build_payload)"
+
+if ((dry_run)); then
+  # Command substitution has already eaten the newline after DONE, and the
+  # dialog reads its input a line at a time.
+  #
+  # SECRET_VAL is redacted. These three carry nothing worse than a hostname
+  # and a yes/no, but a dry run is a thing people paste into bug reports, and
+  # a payload dump should not be the one place secrets are allowed out.
+  printf '%s\n' "$payload" | sed -E 's/^SECRET_VAL=.*/SECRET_VAL=<redacted>/'
+  exit 0
+fi
+
+dialog_pid=""
+cleanup_dialog() {
+  [[ -n $dialog_pid ]] && kill "$dialog_pid" 2>/dev/null
+  return 0
+}
+trap cleanup_dialog EXIT INT TERM
+
+# The dialog is not a filter: it keeps a GIOChannel watch on stdin for the
+# whole session and expects a literal QUIT once it has emitted its secrets.
+# Handing it the payload down a pipe that then closes trips
+# "process_stdin: assertion 'status == G_IO_STATUS_NORMAL' failed" and strands
+# the window on screen with nothing left to read it. So stdin stays open, and
+# QUIT is what retires it.
+secret_keys=()
+secret_vals=()
+
+run_dialog() {
+  local key value out_fd in_fd
+
+  coproc DIALOG { "$AUTH_DIALOG" -u "$uuid" -n "$name" -s "$SERVICE" -i; }
+  dialog_pid="$DIALOG_PID"
+  out_fd="${DIALOG[0]}"
+  in_fd="${DIALOG[1]}"
+
+  printf '%s\n' "$payload" >&"$in_fd"
+
+  # Secrets arrive as key/value line pairs, terminated by a blank line.
+  while IFS= read -r key <&"$out_fd"; do
+    [[ -n $key ]] || break
+    IFS= read -r value <&"$out_fd" || break
+    secret_keys+=("$key")
+    secret_vals+=("$value")
+  done
+
+  printf 'QUIT\n' >&"$in_fd" 2>/dev/null || true
+  exec {in_fd}>&-
+  exec {out_fd}<&-
+
+  wait "$dialog_pid" 2>/dev/null || true
+  dialog_pid=""
+}
+
+run_dialog
+
+((${#secret_keys[@]})) ||
+  die "authentication was cancelled, or the dialog returned no secrets"
+
+# Write the dialog's own preferences back to the profile.
+#
+# Everything the dialog returns is handed to nmcli as an activation secret,
+# which NetworkManager uses and then forgets. That is right for the cookie and
+# wrong for these: ticking "Save passwords" had no lasting effect, because the
+# yes came back and went nowhere. And a save_passwords of "no" is not one
+# cosmetic checkbox — the dialog gates keyring storage on it, and gates
+# autosubmit on it too, so the whole form has to be clicked through by hand.
+#
+# Only the comma-free preferences are written. vpn.secrets is a dictionary
+# nmcli sets as one "k=v,k=v" string, with no escaping available, so a value
+# containing a comma would corrupt the rest -- which rules out xmlconfig and
+# certsigs. Both are only caches of what the gateway will send again anyway.
+persist_prefs() {
+  local i key pairs=()
+
+  for i in "${!secret_keys[@]}"; do
+    for key in "${DIALOG_PREFS[@]}"; do
+      [[ ${secret_keys[$i]} == "$key" ]] || continue
+      [[ ${secret_vals[$i]} == *,* ]] && continue
+      pairs+=("$key=${secret_vals[$i]}")
+    done
+  done
+
+  ((${#pairs[@]})) || return 0
+
+  # Setting vpn.secrets replaces the dictionary, so the credentials go with it.
+  # They are all flagged not-saved and re-fetched on every connect, so there is
+  # nothing there to keep.
+  local IFS=,
+  nmcli connection modify uuid "$uuid" vpn.secrets "${pairs[*]}" 2>/dev/null ||
+    printf 'warning: could not save the dialog preferences\n' >&2
+}
+
+# Not under --probe, which promises to change nothing.
+((probe)) || persist_prefs
+
+# A cookie is a live credential for as long as it lasts, so --probe reports the
+# shape of the reply and never a value: this output goes to a terminal, and
+# from there into scrollback and whatever is reading it.
+if ((probe)); then
+  printf 'auth dialog returned:\n'
+  for i in "${!secret_keys[@]}"; do
+    printf '  %-10s %d bytes\n' "${secret_keys[$i]}" "${#secret_vals[$i]}"
+  done
+  printf 'activated nothing\n'
+  exit 0
+fi
+
+runtime="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+[[ -d $runtime ]] || die "no runtime directory at $runtime"
+
+umask 077
+pwfile="$(mktemp "$runtime/.omarchy-openconnect.XXXXXXXX")"
+((keep_open)) || trap 'rm -f "$pwfile"; cleanup_dialog' EXIT INT TERM
+
+# A live session cookie goes in a 0600 file on tmpfs, never in argv: every
+# process table on the machine can read /proc/<pid>/cmdline.
+for i in "${!secret_keys[@]}"; do
+  printf 'vpn.secrets.%s:%s\n' "${secret_keys[$i]}" "${secret_vals[$i]}" >>"$pwfile"
+done
+
+nmcli connection up uuid "$uuid" passwd-file "$pwfile"

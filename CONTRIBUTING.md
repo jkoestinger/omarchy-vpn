@@ -112,6 +112,13 @@ run the widget with your change in it. A VPN widget that reports a tunnel it
 does not have is worse than one that reports nothing, so a screenshot of the
 panel in the state you changed is genuinely useful in the description.
 
+Claude Code reviews the pull request as well, against the backend contract in
+ARCHITECTURE.md rather than against generic style, and leaves inline comments.
+It is a reviewer, not a gate — nothing it says blocks a merge, and it is wrong
+often enough that disagreeing with it in a reply is a normal outcome. It does
+not run on pull requests from forks, because those get no access to the token it
+needs.
+
 Releases are cut by release-please: merging to `dev` updates a standing release
 pull request, and merging that tags the version and opens the promotion pull
 request onto `main`. Contributors do not need to do anything about this beyond
