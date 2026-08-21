@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.0](https://github.com/jkoestinger/omarchy-vpn/compare/v1.2.1...v1.3.0) (2026-08-21)
+
+
+### Added
+
+* OpenConnect profiles in the NetworkManager backend ([#24](https://github.com/jkoestinger/omarchy-vpn/issues/24)) ([0954c78](https://github.com/jkoestinger/omarchy-vpn/commit/0954c7867ea15288ab5b4223b5c232c0e89f1809))
+
+
+### Fixed
+
+* Proton runs the CLI one invocation at a time, behind a shared lock ([#26](https://github.com/jkoestinger/omarchy-vpn/issues/26)) ([1e9f021](https://github.com/jkoestinger/omarchy-vpn/commit/1e9f021e388dc79a67ac83fdf52d1ea3ac48f6fa)), closes [#23](https://github.com/jkoestinger/omarchy-vpn/issues/23)
+
 ## [1.2.1](https://github.com/jkoestinger/omarchy-vpn/compare/v1.2.0...v1.2.1) (2026-08-18)
 
 
