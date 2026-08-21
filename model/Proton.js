@@ -4,6 +4,55 @@
 // Proton VPN, via the `protonvpn` CLI. Parsing and row-building only — the
 // process plumbing lives in ProtonBackend.qml.
 
+// Two `protonvpn` processes must never overlap. Each one loads the stored
+// session — including its refresh token — at startup and never re-reads it, and
+// Proton rotates that token single-use. So when two of them straddle a token
+// refresh, the winner trades the token and persists the new one, the loser
+// posts the token that was just spent, `/auth/refresh` answers 400, and
+// proton-core reads a 400 there as "this session is finished" and deletes it
+// from the keyring. Nothing is logged. The user sees Proton VPN signing itself
+// out, usually noticing after a reboot.
+//
+// Nothing inside one widget can prevent that: the bar instantiates the widget
+// once per monitor, so a three-monitor desktop is three copies of this backend
+// polling on their own timers, and a QML guard is invisible to the other two.
+// A kernel file lock is not, so every invocation goes through one.
+// XDG_RUNTIME_DIR is where it belongs — per-user, and cleared at logout — with
+// the cache directory as a fallback for a session that somehow has no runtime
+// dir. `-w 60` rather than an unbounded wait, so a wedged CLI costs one poll
+// instead of every poll after it; `exec` so no shell sits around for the
+// duration of a Python start.
+var PROTON_CLI_LOCK = "${XDG_RUNTIME_DIR:-$HOME/.cache}/omarchy-vpn-protonvpn.lock"
+
+function protonCli(args) {
+  return [
+    "sh", "-c",
+    'exec flock -w 60 "' + PROTON_CLI_LOCK + '" protonvpn "$@"',
+    // $0. `sh -c script name a b` puts a and b in "$@", and names the shell.
+    "protonvpn"
+  ].concat(args || [])
+}
+
+// Which of the poll's three reads to start now. They used to start together;
+// with the lock above that only buys a queue three deep per monitor, which is
+// long enough for one tick's commands to still be draining when the next tick
+// adds three more. One at a time, each started by the previous one's exit,
+// keeps the queue to one entry per instance.
+//
+// Order is what the panel wants first: the chip needs the status, the switches
+// need the config, the rows need the country list.
+function protonNextRead(state) {
+  var known = state || {}
+  if (known.busy) return ""
+  if (known.statusDue) return "status"
+  // Both of the others need an account, and a signed-out CLI refuses forever —
+  // see protonAuthRequired.
+  if (known.signedOut) return ""
+  if (!known.configLoaded) return "config"
+  if (!known.countriesLoaded) return "countries"
+  return ""
+}
+
 // `protonvpn status` prints a plain-text block, not JSON:
 //
 //   Status: Connected

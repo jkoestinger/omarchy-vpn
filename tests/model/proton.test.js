@@ -130,3 +130,38 @@ test("protonAuthRequired reads the CLI's refusals", () => {
   eq(Proton.protonAuthRequired("Error: could not reach the Proton VPN API"), false)
   eq(Proton.protonAuthRequired("Status: Disconnected"), false)
 })
+
+// Two overlapping `protonvpn` processes destroy the stored session (see
+// protonCli), so the shape of the argv matters as much as the arguments in it.
+test("protonCli queues every invocation behind one lock", () => {
+  const command = Proton.protonCli(["connect", "NL"])
+  eq(command[0], "sh")
+  eq(command[1], "-c")
+  eq(command[2], 'exec flock -w 60 "${XDG_RUNTIME_DIR:-$HOME/.cache}/omarchy-vpn-protonvpn.lock" protonvpn "$@"')
+  // $0 names the shell; the CLI's own arguments start at $1.
+  eq(command.slice(3), ["protonvpn", "connect", "NL"])
+})
+
+test("protonCli takes no arguments as a bare subcommandless call", () => {
+  eq(Proton.protonCli([]).length, 4)
+  eq(Proton.protonCli().length, 4)
+})
+
+test("protonNextRead asks for one thing at a time, status first", () => {
+  const owed = { statusDue: true, configLoaded: false, countriesLoaded: false }
+  eq(Proton.protonNextRead(owed), "status")
+  eq(Proton.protonNextRead(Object.assign({}, owed, { statusDue: false })), "config")
+  eq(Proton.protonNextRead({ configLoaded: true }), "countries")
+  eq(Proton.protonNextRead({ configLoaded: true, countriesLoaded: true }), "")
+})
+
+test("protonNextRead starts nothing while this instance has a call out", () => {
+  eq(Proton.protonNextRead({ busy: true, statusDue: true }), "")
+})
+
+// A signed-out CLI refuses both of these for as long as nobody signs in, and
+// each refusal costs a Python start.
+test("protonNextRead stops asking for what needs an account when signed out", () => {
+  eq(Proton.protonNextRead({ signedOut: true }), "")
+  eq(Proton.protonNextRead({ signedOut: true, statusDue: true }), "status")
+})
