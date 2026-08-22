@@ -24,6 +24,13 @@ jobs:
     if: >-
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.draft == false
+    # The one control in this file a pull request cannot edit around. The
+    # environment holds CLAUDE_REVIEW_TOKEN and carries a required reviewer, so
+    # a job asking for the token waits for a human first — and it waits whatever
+    # the branch has done to this file, because the protection lives in
+    # repository settings rather than here. Everything else above is a rule the
+    # author under review is free to rewrite in the same commit it runs from.
+    environment: claude-review
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
