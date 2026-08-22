@@ -42,7 +42,14 @@ jobs:
           # A subscription token, minted with `claude setup-token`. Swap for
           # `anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}` to bill the
           # API instead; the action takes either, and nothing else changes.
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          #
+          # Deliberately not the conventional `CLAUDE_CODE_OAUTH_TOKEN`. A pull
+          # request runs the workflow file from its own head, so one that
+          # restored an older revision of this file would resurrect whatever
+          # that revision allowed. Under a name no earlier revision ever
+          # referenced, such a run authenticates against nothing and dies before
+          # it reaches a tool.
+          claude_code_oauth_token: ${{ secrets.CLAUDE_REVIEW_TOKEN }}
           # Posts a checklist comment while it works and edits it when done,
           # so a run that dies halfway is visible rather than silent.
           track_progress: true
