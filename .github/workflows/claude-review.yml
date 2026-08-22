@@ -42,15 +42,27 @@ jobs:
           # A subscription token, minted with `claude setup-token`. Swap for
           # `anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}` to bill the
           # API instead; the action takes either, and nothing else changes.
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          #
+          # Deliberately not the conventional `CLAUDE_CODE_OAUTH_TOKEN`. A pull
+          # request runs the workflow file from its own head, so one that
+          # restored an older revision of this file would resurrect whatever
+          # that revision allowed. Under a name no earlier revision ever
+          # referenced, such a run authenticates against nothing and dies before
+          # it reaches a tool.
+          claude_code_oauth_token: ${{ secrets.CLAUDE_REVIEW_TOKEN }}
           # Posts a checklist comment while it works and edits it when done,
           # so a run that dies halfway is visible rather than silent.
           track_progress: true
           # One comment per pull request, rewritten on each push, instead of a
           # new one every time the author pushes a fixup.
           use_sticky_comment: true
+          # No tool here can run repository code. The checkout is the pull
+          # request's own branch, so anything it could execute is written by the
+          # author under review, and this job holds a subscription token that a
+          # test file could read straight out of its environment. The `test`
+          # workflow runs the suite instead, with no secrets in reach.
           claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(node tests/run.js)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
@@ -87,10 +99,6 @@ jobs:
               `manifest.json`. Nothing at runtime can fill that in.
             - Pasted Nerd Font glyphs where `String.fromCodePoint` belongs.
               Editing tools mangle multi-byte sequences in QML.
-
-            You may run `node tests/run.js`. The `test` workflow already reports
-            pass or fail, so only mention the suite if a failure tells you
-            something about the change that the diff does not.
 
             Leave inline comments with
             mcp__github_inline_comment__create_inline_comment (pass
