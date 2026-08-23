@@ -1,5 +1,5 @@
-// OpenVPN and WireGuard profiles: how `nmcli` formats what it prints, and
-// which rows survive the filtering.
+// OpenVPN, WireGuard, OpenConnect and VPNC profiles: how `nmcli` formats what
+// it prints, and which rows survive the filtering.
 const { test, eq, Shared, NetworkManager } = require("../harness.js")
 
 test("splitNmcliLine splits on the first unescaped colon", () => {
@@ -55,7 +55,9 @@ test("parseNmcliVpnDetails reads one block per connection", () => {
 
 test("hasVpnUsername ignores an empty username", () => {
   eq(NetworkManager.hasVpnUsername("username = alice"), true)
+  eq(NetworkManager.hasVpnUsername("Xauth username = alice"), true)
   eq(NetworkManager.hasVpnUsername("username = "), false)
+  eq(NetworkManager.hasVpnUsername("Xauth username = "), false)
   eq(NetworkManager.hasVpnUsername("comp-lzo = adaptive"), false)
   eq(NetworkManager.hasVpnUsername(""), false)
 })
@@ -109,9 +111,10 @@ test("vpnDataValue matches the whole key, not a prefix", () => {
   eq(NetworkManager.vpnDataValue("", "gateway"), "")
 })
 
-test("nmKindLabel names all three kinds", () => {
+test("nmKindLabel names all four kinds", () => {
   eq(NetworkManager.nmKindLabel({ kind: "wireguard" }), "WireGuard")
   eq(NetworkManager.nmKindLabel({ kind: "openconnect" }), "OpenConnect")
+  eq(NetworkManager.nmKindLabel({ kind: "vpnc" }), "VPNC")
   eq(NetworkManager.nmKindLabel({ kind: "vpn" }), "OpenVPN")
 })
 
@@ -165,6 +168,50 @@ test("nmDetails adds no gateway row for the other kinds", () => {
   ])
   eq(rows.length, 3)
   eq(rows[2], Shared.detail("Managed by", "NetworkManager"))
+})
+
+// -------------------------------------------------------------------- VPNC
+
+// Real `nmcli -t -f connection.uuid,vpn.service-type,vpn.data connection show`
+// shape for a NetworkManager VPNC profile. VPNC's identity and gateway keys
+// deliberately retain the spelling used by vpnc.conf rather than OpenVPN's.
+const VPNC_DETAILS = [
+  "connection.uuid:uuid-vpnc",
+  "vpn.service-type:org.freedesktop.NetworkManager.vpnc",
+  "vpn.data:IKE DH Group = dh2, IPSec ID = staff, IPSec gateway = vpn.example.com, IPSec secret-flags = 0, NAT Traversal Mode = natt, Vendor = cisco, Xauth password-flags = 0, Xauth username = alice",
+  ""
+].join("\n")
+
+test("isVpncService tells VPNC from the other NetworkManager plugins", () => {
+  eq(NetworkManager.isVpncService("org.freedesktop.NetworkManager.vpnc"), true)
+  eq(NetworkManager.isVpncService("org.freedesktop.NetworkManager.openvpn"), false)
+  eq(NetworkManager.isVpncService("org.freedesktop.NetworkManager.openconnect"), false)
+  eq(NetworkManager.isVpncService(""), false)
+})
+
+test("parseNmcliVpnDetails reads VPNC identity and gateway", () => {
+  const detail = NetworkManager.parseNmcliVpnDetails(VPNC_DETAILS)["uuid-vpnc"]
+  eq(detail.hasUsername, true)
+  eq(detail.gateway, "vpn.example.com")
+})
+
+test("nmTargets presents VPNC as an ordinary NetworkManager profile", () => {
+  const targets = NetworkManager.nmTargets([
+    { name: "Campus", uuid: "uuid-vpnc", kind: "vpnc", active: false, hasUsername: true, gateway: "vpn.example.com" }
+  ])
+  eq(targets[0].detail, "VPNC profile")
+  eq(targets[0].glyph, Shared.GLYPH_SHIELD_LOCK)
+  eq(targets[0].args, ["connection", "up", "uuid", "uuid-vpnc"])
+  eq(targets[0].command, undefined)
+  eq(NetworkManager.usernameSetting(targets[0]), "Xauth username")
+})
+
+test("nmDetails names a live VPNC tunnel and its gateway", () => {
+  const rows = NetworkManager.nmDetails([
+    { name: "Campus", uuid: "uuid-vpnc", kind: "vpnc", active: true, gateway: "vpn.example.com" }
+  ])
+  eq(rows[1], Shared.detail("Type", "VPNC"))
+  eq(rows[2], Shared.detail("Gateway", "vpn.example.com"))
 })
 
 test("nmSummary tells no profiles from none connected", () => {

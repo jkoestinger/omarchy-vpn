@@ -16,7 +16,7 @@ surrounding workflow.
 | `ProtonBackend.qml` | Proton VPN, via the `protonvpn` CLI |
 | `MullvadBackend.qml` | Mullvad, via the `mullvad` CLI |
 | `WindscribeBackend.qml` | Windscribe, via `windscribe-cli` |
-| `NetworkManagerBackend.qml` | OpenVPN, WireGuard and OpenConnect, via NetworkManager |
+| `NetworkManagerBackend.qml` | OpenVPN, WireGuard, OpenConnect and VPNC, via NetworkManager |
 | `model/Shared.js` | Helpers every backend leans on, and the widget's own settings |
 | `model/Proton.js`, `model/Mullvad.js`, `model/Windscribe.js`, `model/NetworkManager.js` | Pure parsing and row-building, one file per tool. No QML, no side effects |
 
@@ -40,7 +40,7 @@ duck-types, so a backend that omits something simply renders as blank.
 |----------|---------|
 | `backendId` | Stable key used by settings and IPC (`proton`, `mullvad`, `windscribe`, `networkmanager`) |
 | `label` | Name on the switcher chip and hero. Also what `preferredBackend` stores, so it must match that enum in `manifest.json` exactly |
-| `installNames` | What a user would install to make this backend useful, as a list. The panel joins them into its "install something" line when no tool is detected. Usually one name and the same as `label` — NetworkManager is the exception, offering `["OpenVPN", "WireGuard", "OpenConnect"]`, because nobody installs a connection manager to get a VPN |
+| `installNames` | What a user would install to make this backend useful, as a list. The panel joins them into its "install something" line when no tool is detected. Usually one name and the same as `label` — NetworkManager is the exception, offering `["OpenVPN", "WireGuard", "OpenConnect", "VPNC"]`, because nobody installs a connection manager to get a VPN |
 | `glyph` | Nerd Font character for the hero icon |
 | `supportsFilter`, `filterPlaceholder` | Whether the panel shows its filter field |
 | `filter` | The panel writes the current filter text here |
@@ -352,14 +352,14 @@ tunnel is down; the setting itself is read separately with
 `mullvad lockdown-mode get`, because the case that matters — Mullvad connected,
 another backend about to take over — is exactly when the payload omits it.
 
-**Why OpenVPN, WireGuard and OpenConnect share one backend.** Same listing call,
-same teardown, same secret-agent problem, and no settings of their own on any
-side. Three chips would have meant three views of one manager. NetworkManager
-types them differently — OpenVPN and OpenConnect are `vpn` connections with a
-service-type plugin behind them, WireGuard is its own connection type with the
-keys in the profile — and that difference is carried on each row as `kind`,
-which picks the glyph, decides whether the username check applies, and decides
-whether activation is an nmcli call at all.
+**Why OpenVPN, WireGuard, OpenConnect and VPNC share one backend.** Same listing
+call, same teardown, same secret-agent problem, and no settings of their own on
+any side. Four chips would have meant four views of one manager. NetworkManager
+types them differently — OpenVPN, OpenConnect and VPNC are `vpn` connections
+with a service-type plugin behind them, while WireGuard is its own connection
+type with the keys in the profile — and that difference is carried on each row
+as `kind`, which picks the glyph, decides which username key applies, and
+decides whether activation is an nmcli call at all.
 
 **Why OpenConnect needs a helper.** It is the one kind that cannot be brought
 up with `connection up`. Its `cookie`, `gateway`, `gwcert` and `resolve`
@@ -396,7 +396,7 @@ anything can run it. With no eligible profile the backend disappears, and with
 it the chip, the hero, and the empty list they led to; the import instructions
 move to the panel's `setupHint` line so nothing is lost. Because `detected` now
 follows the profile list, the question is settled by `refresh()` rather than by
-`detect()`, which runs its four probes once and is a no-op after that.
+`detect()`, which runs its five probes once and is a no-op after that.
 
 **FILENAME is what keeps other tools' tunnels out.** When something brings up a
 WireGuard interface itself — Mullvad's `wg0-mullvad` — NetworkManager adopts the

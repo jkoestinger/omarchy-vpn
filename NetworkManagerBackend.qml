@@ -4,9 +4,9 @@ import "model/Shared.js" as Shared
 import "model/NetworkManager.js" as NetworkManager
 
 // NetworkManager backend: every tunnel NetworkManager owns, which on a desktop
-// means OpenVPN, WireGuard and OpenConnect. None has a session daemon of its
-// own to ask — NetworkManager is what imports and stores `.ovpn` files,
-// WireGuard configs and AnyConnect profiles alike. Implements the backend
+// means OpenVPN, WireGuard, OpenConnect and VPNC. None has a session daemon of
+// its own to ask — NetworkManager is what imports and stores `.ovpn` files,
+// WireGuard configs and concentrator profiles alike. Implements the backend
 // contract documented in VpnController.qml.
 Item {
   id: root
@@ -17,10 +17,10 @@ Item {
 
   readonly property string backendId: "networkmanager"
   readonly property string label: "NetworkManager"
-  // Three names, because this backend is the only way to reach any of the
+  // Four names, because this backend is the only way to reach any of the
   // protocols and the label names the manager rather than anything you would
   // install.
-  readonly property var installNames: ["OpenVPN", "WireGuard", "OpenConnect"]
+  readonly property var installNames: ["OpenVPN", "WireGuard", "OpenConnect", "VPNC"]
 
   // The helper that authenticates an OpenConnect profile. Resolved here
   // because only the backend knows where the plugin is installed.
@@ -40,11 +40,12 @@ Item {
   property bool _openvpnPresent: false
   property bool _wireguardPresent: false
   property bool _openconnectPresent: false
+  property bool _vpncPresent: false
   property int _probesDone: 0
   property bool _probed: false
 
   readonly property bool _toolsPresent:
-    _nmcliPresent && (_openvpnPresent || _wireguardPresent || _openconnectPresent)
+    _nmcliPresent && (_openvpnPresent || _wireguardPresent || _openconnectPresent || _vpncPresent)
   // Having the tools is not having anything to connect to. NetworkManager is
   // the one backend whose list can be legitimately empty on a working install,
   // and a chip leading to an empty list is a chip worth not drawing.
@@ -88,21 +89,22 @@ Item {
   // the discovery that would settle that question belongs in refresh(), which
   // the controller skips for a hidden tool. Falling through to it here would
   // poll a tool the user switched off. The binaries do not come and go, so once
-  // probed this is nothing rather than three more processes every poll.
+  // probed this is nothing rather than five more processes every poll.
   function detect(force) {
     if (nmcliProbe.running || openvpnProbe.running || wireguardProbe.running
-        || openconnectProbe.running) return
+        || openconnectProbe.running || vpncProbe.running) return
     if (_probed && force !== true) return
     _probesDone = 0
     nmcliProbe.running = true
     openvpnProbe.running = true
     wireguardProbe.running = true
     openconnectProbe.running = true
+    vpncProbe.running = true
   }
 
   function _probeFinished() {
     root._probesDone += 1
-    if (root._probesDone < 4) return
+    if (root._probesDone < 5) return
     root._probed = true
     if (root._toolsPresent) root.refresh()
   }
@@ -118,15 +120,15 @@ Item {
   function connectTo(target) {
     if (!detected || _working || !target) return
 
-    // `nmcli --ask` prompts for secrets only, and the OpenVPN username is not
-    // one — it lives in vpn.data. Without it the profile authenticates as the
-    // empty user and the server rejects it, so point at the fix rather than
+    // `nmcli --ask` prompts for secrets only, and the OpenVPN/VPNC username is
+    // not one — it lives in vpn.data. Without it the profile authenticates as
+    // the empty user and the server rejects it, so point at the fix rather than
     // open a password prompt that cannot succeed. WireGuard has no username at
     // all, and OpenConnect settles identity with the gateway during its own
     // authentication, so this is neither of their problems.
     if (NetworkManager.needsUsername(target) && target.hasUsername === false) {
       lastError = "\"" + target.label + "\" has no username. Set one with: nmcli connection modify "
-        + target.label + " +vpn.data username=<user>"
+        + "uuid " + target.uuid + " +vpn.data '" + NetworkManager.usernameSetting(target) + "=<user>'"
       return
     }
 
@@ -215,6 +217,7 @@ Item {
   function runnable(profile) {
     if (profile.kind === "wireguard") return _wireguardPresent
     if (profile.kind === "openconnect") return _openconnectPresent
+    if (profile.kind === "vpnc") return _vpncPresent
     return _openvpnPresent
   }
 
@@ -306,6 +309,24 @@ Item {
     running: true
     onExited: function(exitCode) {
       root._openconnectPresent = exitCode === 0
+      root._probeFinished()
+    }
+  }
+
+  // NetworkManager's VPNC service is deliberately not on PATH. Distributions
+  // put it in lib or libexec, so checking the carrier itself is more accurate
+  // than checking for the standalone `vpnc` client a profile does not invoke.
+  Process {
+    id: vpncProbe
+    command: ["sh", "-c", [
+      "test -x /usr/lib/nm-vpnc-service",
+      "test -x /usr/libexec/nm-vpnc-service",
+      "test -x /usr/lib/NetworkManager/nm-vpnc-service",
+      "test -x /usr/lib/networkmanager/nm-vpnc-service"
+    ].join(" || ")]
+    running: true
+    onExited: function(exitCode) {
+      root._vpncPresent = exitCode === 0
       root._probeFinished()
     }
   }
@@ -419,10 +440,12 @@ Item {
         if (!detail) continue
 
         // The second pass is where a `vpn` row learns which plugin it is, so
-        // it is also where OpenConnect stops being indistinguishable from
-        // OpenVPN. Everything downstream keys off `kind`.
+        // it is also where OpenConnect and VPNC stop being indistinguishable
+        // from OpenVPN. Everything downstream keys off `kind`.
         if (NetworkManager.isOpenConnectService(detail.serviceType)) {
           candidate.kind = "openconnect"
+        } else if (NetworkManager.isVpncService(detail.serviceType)) {
+          candidate.kind = "vpnc"
         } else if (!NetworkManager.isOpenVpnService(detail.serviceType)) {
           continue
         }

@@ -1,17 +1,17 @@
 .pragma library
 .import "Shared.js" as Shared
 
-// OpenVPN and WireGuard profiles, via `nmcli`. Parsing and row-building only —
-// the process plumbing lives in NetworkManagerBackend.qml.
+// OpenVPN, WireGuard, OpenConnect and VPNC profiles, via `nmcli`. Parsing and
+// row-building only — the process plumbing lives in NetworkManagerBackend.qml.
 
 //
-// OpenVPN, WireGuard and OpenConnect all live here, because on a desktop all
-// three are NetworkManager profiles: same listing call, same teardown. What
-// differs is how NetworkManager types them — OpenVPN and OpenConnect are `vpn`
-// connections with a service-type plugin behind them, WireGuard is its own
-// connection type with the keys in the profile.
+// All four live here because on a desktop they are NetworkManager profiles:
+// same listing call, same activation and teardown. What differs is how
+// NetworkManager types them — OpenVPN, OpenConnect and VPNC are `vpn`
+// connections with a service-type plugin behind them, while WireGuard is its
+// own connection type with the keys in the profile.
 //
-// OpenConnect differs from the other two in one way that reaches this file: it
+// OpenConnect differs from the other three in one way that reaches this file: it
 // cannot be brought up with `connection up` alone. Its cookie/gateway/gwcert/
 // resolve secrets are all flagged not-saved, so every activation needs a
 // secret agent to produce them, and the answer is a helper that runs the
@@ -109,7 +109,11 @@ function parseNmcliVpnDetails(raw) {
     else if (pair[0] === "vpn.service-type") current.serviceType = pair[1]
     else if (pair[0] === "vpn.data") {
       current.hasUsername = hasVpnUsername(pair[1])
+      // OpenConnect calls this `gateway`; VPNC inherited the spelling used by
+      // vpnc.conf. Keeping one field downstream lets the detail row stay blind
+      // to the plugin that supplied it.
       current.gateway = vpnDataValue(pair[1], "gateway")
+        || vpnDataValue(pair[1], "IPSec gateway")
     }
   }
   flush()
@@ -132,16 +136,20 @@ function vpnDataValue(data, wanted) {
   return ""
 }
 
-// vpn.data is a comma-separated "key = value" list. OpenVPN's username lives
-// there rather than in vpn.secrets, so `nmcli --ask` never prompts for it —
-// a profile missing it authenticates as the empty user and is rejected.
+// vpn.data is a comma-separated "key = value" list. OpenVPN calls the identity
+// `username`; VPNC calls it `Xauth username`. Both live outside vpn.secrets, so
+// `nmcli --ask` never prompts for either — a profile missing one authenticates
+// as the empty user and is rejected.
 function hasVpnUsername(data) {
   var entries = String(data || "").split(",")
   for (var i = 0; i < entries.length; i++) {
     var entry = entries[i].trim()
-    if (entry.indexOf("username") !== 0) continue
+    var eq = entry.indexOf("=")
+    if (eq === -1) continue
+    var key = entry.substring(0, eq).trim().toLowerCase()
+    if (key !== "username" && key !== "xauth username") continue
 
-    var value = entry.substring(entry.indexOf("=") + 1).trim()
+    var value = entry.substring(eq + 1).trim()
     if (value !== "") return true
   }
   return false
@@ -157,6 +165,10 @@ function isOpenConnectService(serviceType) {
   return String(serviceType || "").toLowerCase().indexOf("openconnect") !== -1
 }
 
+function isVpncService(serviceType) {
+  return String(serviceType || "").toLowerCase().indexOf("networkmanager.vpnc") !== -1
+}
+
 function isWireGuard(profile) {
   return profile && profile.kind === "wireguard"
 }
@@ -165,16 +177,25 @@ function isOpenConnect(profile) {
   return profile && profile.kind === "openconnect"
 }
 
-// A username is an OpenVPN concern only. WireGuard keeps its keys in the
+function isVpnc(profile) {
+  return profile && profile.kind === "vpnc"
+}
+
+// A username is an OpenVPN and VPNC concern. WireGuard keeps its keys in the
 // profile, and OpenConnect asks the gateway who you are as part of its own
 // authentication, so neither can be missing one.
 function needsUsername(profile) {
   return !isWireGuard(profile) && !isOpenConnect(profile)
 }
 
+function usernameSetting(profile) {
+  return isVpnc(profile) ? "Xauth username" : "username"
+}
+
 function nmKindLabel(profile) {
   if (isWireGuard(profile)) return "WireGuard"
   if (isOpenConnect(profile)) return "OpenConnect"
+  if (isVpnc(profile)) return "VPNC"
   return "OpenVPN"
 }
 
@@ -192,19 +213,20 @@ function nmTargets(profiles, authScript) {
     var profile = profiles[i]
     var wireguard = isWireGuard(profile)
     var openconnect = isOpenConnect(profile)
+    var vpnc = isVpnc(profile)
 
     var glyph = Shared.GLYPH_LOCK
     if (wireguard) glyph = Shared.GLYPH_SHIELD
-    else if (openconnect) glyph = Shared.GLYPH_SHIELD_LOCK
+    else if (openconnect || vpnc) glyph = Shared.GLYPH_SHIELD_LOCK
 
     var target = {
       key: "profile:" + profile.uuid,
       label: profile.name,
       detail: profile.active
         ? "Connected"
-        // Only OpenVPN can be missing a username: WireGuard keeps its keys in
-        // the profile, and OpenConnect settles identity with the gateway, so
-        // neither has anything for the user to have left out.
+        // OpenVPN and VPNC keep identity outside their secrets. WireGuard keeps
+        // its keys in the profile, and OpenConnect settles identity with the
+        // gateway, so neither has anything for the user to have left out.
         : (!needsUsername(profile) || profile.hasUsername
             ? nmKindLabel(profile) + " profile"
             : "No username set"),
@@ -238,9 +260,10 @@ function nmDetails(profiles) {
     if (!profiles[i].active) continue
     rows.push(Shared.detail("Profile", profiles[i].name))
     rows.push(Shared.detail("Type", nmKindLabel(profiles[i])))
-    // Which gateway an OpenConnect profile reached, since a company commonly
-    // has several and the profile name rarely says which one.
-    if (isOpenConnect(profiles[i]) && profiles[i].gateway) {
+    // Which gateway an interactive or concentrator-backed profile reached,
+    // since an organisation commonly has several and the profile name rarely
+    // says which one.
+    if ((isOpenConnect(profiles[i]) || isVpnc(profiles[i])) && profiles[i].gateway) {
       rows.push(Shared.detail("Gateway", profiles[i].gateway))
     }
   }

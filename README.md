@@ -91,8 +91,8 @@ Omarchy with its Quickshell desktop, plus at least one of:
   (`mullvad account login <number>`).
 - **Windscribe** — `windscribe-cli` with the Windscribe app running, logged in
   (`windscribe-cli login`).
-- **OpenVPN, WireGuard or OpenConnect** — `nmcli`, plus `openvpn`, `wg` (wireguard-tools),
-  or `networkmanager-openconnect`,
+- **OpenVPN, WireGuard, OpenConnect or VPNC** — `nmcli`, plus `openvpn`, `wg`
+  (wireguard-tools), `networkmanager-openconnect`, or `networkmanager-vpnc`,
   with at least one profile imported into NetworkManager.
 
 ## Settings
@@ -173,9 +173,9 @@ terminal costs the panel a moment and nothing more.
 
 <img src="preview-networkmanager.png" alt="The VPN panel on the NetworkManager chip, listing two OpenVPN profiles and one WireGuard profile" width="365">
 
-Neither OpenVPN nor WireGuard has a daemon of its own to ask, so both come from
-NetworkManager — the thing that imports and stores tunnel configs on a desktop.
-They share one chip, and the row icon says which is which. Import one with:
+OpenVPN, WireGuard, OpenConnect and VPNC profiles all come from NetworkManager —
+the thing that imports and stores tunnel configs on a desktop. They share one
+chip, and the row icon says which is which. Import one with:
 
 ```bash
 nmcli connection import type openvpn file ~/Downloads/office.ovpn
@@ -183,9 +183,11 @@ nmcli connection import type wireguard file ~/Downloads/home.conf
 ```
 
 NetworkManager runs on every desktop, so the chip appears only once you have a
-profile it can actually carry — an OpenVPN one with `openvpn` installed, or a
-WireGuard one with `wireguard-tools`. Until then the panel shows the import
-command above rather than a chip leading to an empty list.
+profile it can actually carry — an OpenVPN one with `openvpn` installed, a
+WireGuard one with `wireguard-tools`, an OpenConnect one with
+`networkmanager-openconnect`, or a VPNC one with `networkmanager-vpnc`. Until
+then the panel shows the import command above rather than a chip leading to an
+empty list.
 
 A tunnel you started some other way is not listed: a bare `openvpn` process,
 `openvpn-client@.service`, or a `wg-quick@` unit. Neither is a tunnel another
@@ -218,6 +220,11 @@ Without those, clicking a profile opens a terminal running
 WireGuard needs none of this: its keys live in the profile. The one exception is
 a profile whose `wireguard.private-key-flags` were set to ask an agent, which
 lands in the same terminal.
+
+VPNC profiles follow the OpenVPN credential path, but call their identity
+`Xauth username` and carry both a user password and an IPSec group secret. Save
+both secrets in the NetworkManager profile for a one-click connection; if the
+user password is not saved, the panel opens `nmcli --ask` in a terminal.
 
 If you are importing a Proton `.ovpn`: the username and password are the
 **OpenVPN/IKEv2** credentials from your Proton dashboard, not your Proton
