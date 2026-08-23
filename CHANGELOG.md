@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/jkoestinger/omarchy-vpn/compare/v1.3.0...v1.4.0) (2026-08-23)
+
+
+### Added
+
+* add NetworkManager VPNC profiles ([#32](https://github.com/jkoestinger/omarchy-vpn/issues/32)) ([22e2eba](https://github.com/jkoestinger/omarchy-vpn/commit/22e2eba00ba6602deb13d502c23703f62f753f92))
+
 ## [1.3.0](https://github.com/jkoestinger/omarchy-vpn/compare/v1.2.1...v1.3.0) (2026-08-21)
 
 
