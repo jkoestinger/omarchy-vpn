@@ -97,7 +97,6 @@ Item {
 
   function _probeFinished() {
     root._probed = true
-    if (root._toolsPresent) root.refresh()
   }
 
   function refresh() {
@@ -258,9 +257,15 @@ Item {
     stdout: StdioCollector { id: statusStdout; waitForEnd: true }
     stderr: StdioCollector { id: statusStderr; waitForEnd: true }
     onExited: function(exitCode) {
-      root.upInterfaces = exitCode === 0
-        ? AmneziaWg.parseAwgInterfaces(String(statusStdout.text || ""))
-        : []
+      if (exitCode === 0) {
+        root.upInterfaces = AmneziaWg.parseAwgInterfaces(String(statusStdout.text || ""))
+        root.lastError = ""
+      } else {
+        // A failed status read says nothing about a tunnel that may still be
+        // up. Keep the last successful answer so its disconnect control stays
+        // available instead of presenting a false disconnected state.
+        root.lastError = Shared.elide(String(statusStderr.text || "") || "Could not read AmneziaWG status; showing last known connection state", 140)
+      }
       root.applyProfiles(root._pendingFiles || [])
       root._pendingFiles = null
       if (!healthProcess.running) healthProcess.running = true
