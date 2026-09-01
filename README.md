@@ -4,15 +4,15 @@ A VPN widget for the Omarchy bar. One icon shows whether you are behind a
 tunnel; one panel connects, disconnects, and switches between the VPN tools you
 actually have installed.
 
-It supports **Proton VPN**, **Mullvad**, **Windscribe**, and the **OpenVPN**, **OpenConnect** and
-**WireGuard** profiles NetworkManager holds. Only the tools
+It supports **Proton VPN**, **Mullvad**, **Windscribe**, **AmneziaWG**, and the **OpenVPN**,
+**OpenConnect** and **WireGuard** profiles NetworkManager holds. Only the tools
 that have something to offer appear — install none and the widget tells you so;
 have several and a chip row lets you switch between them.
 
 <img src="preview.png" alt="The VPN panel open in the Omarchy bar, showing a Proton VPN connection to Zurich and a country list" width="365">
 
 Each installed tool gets its own chip and its own view — Proton VPN above,
-[Mullvad](#mullvad), [Windscribe](#windscribe) and
+[Mullvad](#mullvad), [Windscribe](#windscribe), [AmneziaWG](#amneziawg) and
 [NetworkManager](#networkmanager-profiles) below.
 
 ## Install
@@ -68,9 +68,9 @@ Inside the panel:
 - **The list** is what you can connect to: for Proton VPN, fastest / P2P /
   random / Secure Core followed by every country; for Mullvad, any location
   followed by every country it has relays in; for Windscribe, best location
-  followed by every region it serves; for NetworkManager, your OpenVPN and
-  WireGuard profiles, told apart by their icon. A check mark marks where you are
-  connected.
+  followed by every region it serves; for AmneziaWG, each local profile; for
+  NetworkManager, your OpenVPN and WireGuard profiles, told apart by their icon.
+  A check mark marks where you are connected.
 
 Keyboard, once the panel is open: `j`/`k` or arrows move — through the header,
 the chips, the name row, the settings switches if they are open, then the list —
@@ -91,6 +91,8 @@ Omarchy with its Quickshell desktop, plus at least one of:
   (`mullvad account login <number>`).
 - **Windscribe** — `windscribe-cli` with the Windscribe app running, logged in
   (`windscribe-cli login`).
+- **AmneziaWG** — `awg` and `awg-quick` from `amneziawg-tools`, with at least
+  one `.conf` profile in `~/.config/omarchy/vpn/awg-profiles/`.
 - **OpenVPN, WireGuard, OpenConnect or VPNC** — `nmcli`, plus `openvpn`, `wg`
   (wireguard-tools), `networkmanager-openconnect`, or `networkmanager-vpnc`,
   with at least one profile imported into NetworkManager.
@@ -105,7 +107,7 @@ Configure these in **Setup › Plugins**, or in the widget's entry in
 | `refreshIntervalSec` | `15` | How often the connection status is polled |
 | `preferredBackend` | `Auto` | Which tool the panel opens on. `Auto` picks whichever is connected |
 | `favoriteCountries` | `CH,NL,US` | Country codes pinned to the top of the Proton VPN and Mullvad lists. Windscribe has no codes, so it matches names instead — see below |
-| `hiddenBackends` | *(empty)* | Tools the widget ignores entirely: `proton`, `mullvad`, `windscribe`, `networkmanager`. The gear inside the panel writes this |
+| `hiddenBackends` | *(empty)* | Tools the widget ignores entirely: `proton`, `mullvad`, `windscribe`, `amneziawg`, `networkmanager`. The gear inside the panel writes this |
 
 ## Mullvad
 
@@ -168,6 +170,32 @@ run while another copy of itself is running, exiting with `Windscribe CLI is
 already running` rather than waiting its turn. The widget serialises its own calls
 and retries the ones that lose the race, so a command you run yourself at a
 terminal costs the panel a moment and nothing more.
+
+## AmneziaWG
+
+AmneziaWG profiles are regular `awg-quick` configuration files. Put exported
+`.conf` files in `~/.config/omarchy/vpn/awg-profiles/`; the directory is created
+automatically when the widget first checks for profiles. Each file becomes a
+row on the AmneziaWG chip, named after its filename — for example,
+`home.conf` appears as **home**.
+
+Profiles normally contain a private key. The widget creates the directory with
+owner-only access (`0700`), but does not change an existing profile's mode; keep
+each `.conf` readable only by your user, for example with `chmod 600 *.conf`.
+
+The chip appears only when `awg` is installed and that directory contains at
+least one readable profile. Selecting a profile brings it up with `awg-quick`;
+selecting another takes the first one down before bringing the new one up, so
+the widget does not leave two AmneziaWG tunnels running.
+
+Bringing a profile up or down needs root privileges. The widget normally opens
+a Polkit prompt through `pkexec`; with a `NOPASSWD` sudo rule for `awg-quick`,
+it uses `sudo -n` instead and does not prompt.
+
+For safety, profiles containing `PreUp`, `PostUp`, `PreDown`, or `PostDown`
+hooks are shown as blocked and cannot be connected from the widget. Those
+directives execute arbitrary commands as root through `awg-quick`; remove the
+hooks or run a profile you trust directly from a terminal instead.
 
 ## NetworkManager profiles
 
@@ -290,7 +318,7 @@ it:
 ```bash
 omarchy-shell jkoestinger.vpn status       # "Proton VPN · CH#1129 · Zurich, Switzerland"
 omarchy-shell jkoestinger.vpn ip           # current public address
-omarchy-shell jkoestinger.vpn backends     # "proton mullvad windscribe networkmanager"
+omarchy-shell jkoestinger.vpn backends     # "proton mullvad windscribe networkmanager amneziawg"
 omarchy-shell jkoestinger.vpn use mullvad  # switch the panel's active tool
 omarchy-shell jkoestinger.vpn connect CH   # country code, region or profile name, or row key
 omarchy-shell jkoestinger.vpn quickconnect # each tool's default connection
