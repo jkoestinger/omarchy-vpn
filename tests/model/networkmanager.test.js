@@ -62,6 +62,40 @@ test("hasVpnUsername ignores an empty username", () => {
   eq(NetworkManager.hasVpnUsername(""), false)
 })
 
+// Real `nmcli -t -f connection.uuid,vpn.service-type,vpn.data` output for an
+// Azure point-to-site profile imported from the gateway's vpnconfig_cert.ovpn.
+// Certificate authentication, so there is no username anywhere in vpn.data.
+const AZURE_CERT_DETAILS = [
+  "connection.uuid:0b7f2c31-9d44-4a1e-8c66-2f5b9a0d1e73",
+  "vpn.service-type:org.freedesktop.NetworkManager.openvpn",
+  "vpn.data:auth = SHA256, ca = /home/user/.local/share/networkmanagement/certificates/nm-openvpn/azure-p2s-ca.pem, cert = /home/user/.local/share/networkmanagement/certificates/nm-openvpn/azure-p2s-cert.pem, challenge-response-flags = 2, cipher = AES-256-GCM, connection-type = tls, data-ciphers = AES-256-GCM:AES-128-GCM:AES-256-CBC, dev = tun, key = /home/user/.local/share/networkmanagement/certificates/nm-openvpn/azure-p2s-key.pem, proto-tcp = yes, remote = azuregateway-1a2b3c4d-5e6f-4718-9abc-def012345678-0123456789ab.vpn.azure.com:443, remote-cert-tls = server, ta = /home/user/.local/share/networkmanagement/certificates/nm-openvpn/azure-p2s-tls-auth.pem, ta-dir = 1, tls-version-min = 1.2, verify-x509-name = name:1a2b3c4d-5e6f-4718-9abc-def012345678.vpn.azure.com"
+].join("\n")
+
+test("parseNmcliVpnDetails reads the OpenVPN auth mode", () => {
+  const detail = NetworkManager.parseNmcliVpnDetails(AZURE_CERT_DETAILS)["0b7f2c31-9d44-4a1e-8c66-2f5b9a0d1e73"]
+  eq(detail.connectionType, "tls")
+  eq(detail.hasUsername, false)
+})
+
+test("a certificate-only OpenVPN profile is not missing a username", () => {
+  // `tls` and `static-key` authenticate without one; only `password` and
+  // `password-tls` read a username, so those are the two that can lack it.
+  eq(NetworkManager.needsUsername({ kind: "vpn", connectionType: "tls" }), false)
+  eq(NetworkManager.needsUsername({ kind: "vpn", connectionType: "static-key" }), false)
+  eq(NetworkManager.needsUsername({ kind: "vpn", connectionType: "password" }), true)
+  eq(NetworkManager.needsUsername({ kind: "vpn", connectionType: "password-tls" }), true)
+  // A profile whose auth mode never got read stays subject to the check.
+  eq(NetworkManager.needsUsername({ kind: "vpn" }), true)
+})
+
+test("nmTargets labels a certificate-only profile by its kind", () => {
+  const targets = NetworkManager.nmTargets([
+    { name: "azure-p2s", uuid: "uuid-tls", kind: "vpn", active: false, hasUsername: false, connectionType: "tls" }
+  ])
+  eq(targets[0].detail, "OpenVPN profile")
+  eq(targets[0].connectionType, "tls")
+})
+
 test("nmTargets flags an OpenVPN profile with no username", () => {
   const targets = NetworkManager.nmTargets([
     { name: "Work", uuid: "uuid-1", kind: "vpn", active: false, hasUsername: false },
