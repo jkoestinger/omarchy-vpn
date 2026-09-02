@@ -451,6 +451,7 @@ Item {
         }
 
         candidate.hasUsername = detail.hasUsername
+        candidate.connectionType = detail.connectionType
         candidate.gateway = detail.gateway
         usable.push(candidate)
       }

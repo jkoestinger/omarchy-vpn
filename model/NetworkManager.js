@@ -84,7 +84,8 @@ function parseNmcliConnections(raw) {
 
 // `nmcli -t -f connection.uuid,vpn.service-type,vpn.data connection show <uuid>…`
 // prints one blank-line-separated block per connection, each line prefixed
-// with its field name. Returns { uuid: { serviceType, hasUsername, gateway } }.
+// with its field name. Returns
+// { uuid: { serviceType, hasUsername, gateway, connectionType } }.
 function parseNmcliVpnDetails(raw) {
   var details = {}
   var current = null
@@ -103,12 +104,13 @@ function parseNmcliVpnDetails(raw) {
     }
 
     var pair = splitNmcliLine(line)
-    if (!current) current = { uuid: "", serviceType: "", hasUsername: false, gateway: "" }
+    if (!current) current = { uuid: "", serviceType: "", hasUsername: false, gateway: "", connectionType: "" }
 
     if (pair[0] === "connection.uuid") current.uuid = pair[1]
     else if (pair[0] === "vpn.service-type") current.serviceType = pair[1]
     else if (pair[0] === "vpn.data") {
       current.hasUsername = hasVpnUsername(pair[1])
+      current.connectionType = vpnDataValue(pair[1], "connection-type")
       // OpenConnect calls this `gateway`; VPNC inherited the spelling used by
       // vpnc.conf. Keeping one field downstream lets the detail row stay blind
       // to the plugin that supplied it.
@@ -181,11 +183,23 @@ function isVpnc(profile) {
   return profile && profile.kind === "vpnc"
 }
 
+// NetworkManager's OpenVPN plugin records the auth mode in `connection-type`:
+// `tls` authenticates with a certificate and key alone, and `static-key` with a
+// pre-shared key, so neither reads a username — only `password` and
+// `password-tls` do. An Azure point-to-site certificate profile imports as
+// `tls`, and calling that one "no username set" blocks a connection that would
+// have worked.
+function isCertificateOnlyOpenVpn(profile) {
+  var type = String((profile && profile.connectionType) || "").toLowerCase()
+  return type === "tls" || type === "static-key"
+}
+
 // A username is an OpenVPN and VPNC concern. WireGuard keeps its keys in the
 // profile, and OpenConnect asks the gateway who you are as part of its own
 // authentication, so neither can be missing one.
 function needsUsername(profile) {
   return !isWireGuard(profile) && !isOpenConnect(profile)
+    && !isCertificateOnlyOpenVpn(profile)
 }
 
 function usernameSetting(profile) {
@@ -235,6 +249,7 @@ function nmTargets(profiles, authScript) {
       uuid: profile.uuid,
       kind: profile.kind,
       hasUsername: profile.hasUsername,
+      connectionType: profile.connectionType || "",
       gateway: profile.gateway || ""
     }
 
