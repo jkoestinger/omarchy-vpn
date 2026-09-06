@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.1](https://github.com/jkoestinger/omarchy-vpn/compare/v1.4.0...v1.4.1) (2026-09-02)
+
+
+### Fixed
+
+* connect certificate-only OpenVPN profiles without a username ([#36](https://github.com/jkoestinger/omarchy-vpn/issues/36)) ([be70c35](https://github.com/jkoestinger/omarchy-vpn/commit/be70c35b670cd8fd66c0b747e0f83f14dcd428cb))
+
 ## [1.4.0](https://github.com/jkoestinger/omarchy-vpn/compare/v1.3.0...v1.4.0) (2026-08-23)
 
 
