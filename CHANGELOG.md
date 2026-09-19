@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/jkoestinger/omarchy-vpn/compare/v1.5.0...v1.6.0) (2026-09-19)
+
+
+### Added
+
+* add L2TP/IPsec support to the NetworkManager backend ([#49](https://github.com/jkoestinger/omarchy-vpn/issues/49)) ([1418b13](https://github.com/jkoestinger/omarchy-vpn/commit/1418b13e4ad2d9f00d56a6a60fce2f6eb2998a4d))
+
 ## [1.5.0](https://github.com/jkoestinger/omarchy-vpn/compare/v1.4.1...v1.5.0) (2026-09-19)
 
 
