@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.5.0](https://github.com/jkoestinger/omarchy-vpn/compare/v1.4.1...v1.5.0) (2026-09-19)
+
+
+### Added
+
+* add a Cloudflare WARP backend ([ac05471](https://github.com/jkoestinger/omarchy-vpn/commit/ac05471bb0ab4b69cb0c7784754560c2968c36c1))
+* add a Cloudflare WARP backend ([6cf0b4a](https://github.com/jkoestinger/omarchy-vpn/commit/6cf0b4ac035b0a3f513e2cd7d01b961ddd38ca2e))
+* adds AmneziaWG support ([2e57fec](https://github.com/jkoestinger/omarchy-vpn/commit/2e57fec456753aba424d01b83a22bedb34496fa9))
+* open a terminal from a clickable setup hint ([48efd31](https://github.com/jkoestinger/omarchy-vpn/commit/48efd31331bc60ea603766277f3e720da4e13928))
+
+
+### Fixed
+
+* AmneziaWG review follow-ups ([#51](https://github.com/jkoestinger/omarchy-vpn/issues/51)) ([fdab93c](https://github.com/jkoestinger/omarchy-vpn/commit/fdab93cf0f2b1b4bd7d1a3b372b94a748e1d25d8))
+* read WARP's status as part of detection so a live tunnel is not shown as down ([763b0bd](https://github.com/jkoestinger/omarchy-vpn/commit/763b0bd9a50be3361336425258d9bcf7a138d6c3))
+* restore the backend order and untested WARP decisions lost in review ([58edfbb](https://github.com/jkoestinger/omarchy-vpn/commit/58edfbbe2f93e1264ff34f3f0abda01e58e3e93c))
+* stop IPC setup offering sudo systemctl for a WARP that is already listed ([74c9c3e](https://github.com/jkoestinger/omarchy-vpn/commit/74c9c3e123bce7ad0f584b73f0566b5b9f95a363))
+* stop the Proton poll from crashing gnome-keyring-daemon ([7acada1](https://github.com/jkoestinger/omarchy-vpn/commit/7acada1abfbe5f57b24fd46b2a5b175cf00601ec))
+* stop the Proton poll from crashing gnome-keyring-daemon ([7aad652](https://github.com/jkoestinger/omarchy-vpn/commit/7aad652dd677ce6117e23a7d9aebd0cb2b67360d)), closes [#42](https://github.com/jkoestinger/omarchy-vpn/issues/42)
+* stop the WARP with DNS over HTTPS row implying plain WARP leaves DNS unencrypted ([f16aeb9](https://github.com/jkoestinger/omarchy-vpn/commit/f16aeb90ca1142a5b59b14bc317e51715e015ccc))
+* WARP backend follow-ups from the review of [#41](https://github.com/jkoestinger/omarchy-vpn/issues/41) ([5e67fdc](https://github.com/jkoestinger/omarchy-vpn/commit/5e67fdce57b9ac739b6da33befca9e6e7f91d38a))
+
+
+### Documentation
+
+* list NetworkManager before AmneziaWG in the architecture file table ([8ce95ef](https://github.com/jkoestinger/omarchy-vpn/commit/8ce95ef73ec8c9cc6badf78377ab5ceca4654bb6))
+* refactor agents doc ([b9c8bf6](https://github.com/jkoestinger/omarchy-vpn/commit/b9c8bf61711b18af31327bcc5aa6ae0502604b06))
+
 ## [1.4.1](https://github.com/jkoestinger/omarchy-vpn/compare/v1.4.0...v1.4.1) (2026-09-02)
 
 
