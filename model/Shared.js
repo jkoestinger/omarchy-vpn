@@ -156,3 +156,24 @@ function toggleBackendId(ids, id) {
   if (!found) next.push(id)
   return next
 }
+
+// Independent backends opt out in both directions: starting another tool must
+// not silently tear down split tunnels that the user enabled individually.
+function conflictsWithBackend(selected, candidate) {
+  return candidate !== selected && candidate.connected
+    && selected.allowConcurrent !== true && candidate.allowConcurrent !== true
+}
+
+function targetIsActive(backend, target) {
+  return target.active !== undefined ? target.active === true : target.key === backend.currentKey
+}
+
+function targetAction(backend, target) {
+  return backend.independentTargets === true && targetIsActive(backend, target)
+    ? "disconnect" : "connect"
+}
+
+function showMasterSwitch(backend) {
+  return backend !== null && backend !== undefined
+    && (backend.independentTargets !== true || backend.targets.length <= 1)
+}

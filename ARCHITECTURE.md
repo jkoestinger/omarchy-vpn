@@ -61,6 +61,12 @@ duck-types, so a backend that omits something simply renders as blank.
 | `toggles` | `[{ key, label, detail, value, busy }]` — the tool's own settings. Omit it, or return `[]`, and the panel draws no settings block |
 | `busy`, `actionStatus`, `lastError` | Transient feedback |
 
+Backends can opt into independent profiles with `independentTargets: true`:
+`targets` then carry an `active` flag and the backend supplies
+`disconnectTarget(target)`. `allowConcurrent: true` separately exempts a backend
+from cross-provider teardown. Both default to false. An optional `headline`
+replaces the hero's `summary` without changing the bar's descriptive summary.
+
 **Verbs**
 
 `detect(force)`, `refresh()`, `connectTo(target)`, `disconnect()`,
@@ -125,13 +131,15 @@ if it cannot, the contract is what should change.
 
 ## Design notes
 
-**Exclusivity.** Every connect goes through `VpnController.connectVia()` or
+**Exclusivity.** Backends may expose `allowConcurrent: true` to opt out of
+automatic teardown in both directions. NetworkManager does so because its
+profiles may route independent subnets. Every connect goes through `VpnController.connectVia()` or
 `toggleActive()`, never straight to a backend. Those disconnect every other
-connected backend, wait for them to report down (700ms polls, ~10s cap, then
+conflicting connected backend, wait for them to report down (700ms polls, ~10s cap, then
 proceed anyway so a stuck teardown cannot swallow the user's connect), and only
 then bring the new tunnel up.
 
-Every *disconnect* goes through `disconnectActive()` for the mirror-image
+Every *disconnect* goes through `disconnectActive()` or `toggleTarget()` for the mirror-image
 reason: the connect waiting on that teardown is part of what is being withdrawn,
 and a queued action nobody cancelled fires seconds later and reconnects the
 tunnel the user just asked to bring down. Picking a second target cancels the
@@ -446,11 +454,15 @@ Profiles the user imported live under `/etc`, so anything under `/run` is
 dropped. An nmcli too old to report FILENAME leaves it empty, which keeps the
 row rather than emptying the list.
 
-**Exclusivity inside the backend.** The controller enforces one tunnel across
-backends, but NetworkManager will happily run two of its own profiles at once,
-and picking one is never a request for both. So `connectTo` runs two commands
-when something else is up: down the active profile, then up the chosen one. A
-failed teardown still proceeds, for the same reason the controller's does.
+**Independent NetworkManager profiles.** `independentTargets` tells the panel to
+show a switch for each row and the controller to call `disconnectTarget(target)`
+when an active row is selected. Targets expose `active`; single-target backends
+continue to use `currentKey`. `connectTo` activates only the requested profile.
+`disconnect()` explicitly disconnects all active profiles listed by this backend;
+`disconnectTarget` affects one UUID. The summary includes every active name, so
+connection changes invalidate the public-IP reading even while other tunnels stay
+up. State is observed from NetworkManager, not optimistically forced off when
+only one of several tunnels is disconnected. Routing and DNS remain profile policy.
 
 **AmneziaWG reads the config, the shell only fetches it.** `awg-quick` has no
 daemon to ask, so everything the panel knows about a profile comes out of the
@@ -547,7 +559,44 @@ of the emulation. `tests/run.js` then runs every `tests/model/*.test.js` it
 finds, so a new backend's tests are picked up by dropping the file in. CI runs
 the same command on push and pull request.
 
-The QML halves are not covered: they are `Process` plumbing and bindings, and
-the interesting logic was pushed into `model/` precisely so it could be tested.
+Most QML plumbing is not covered; the NetworkManager harness below covers
+concurrent connection commands. Pure decisions and parsing stay in `model/`.
 When a bug turns out to live in a parser, the fix belongs there with a case
 beside it.
+
+### Concurrent-profile QML regression tests
+
+The NetworkManager backend and controller also have a hermetic QML harness.
+Its replacement `Quickshell.Io` module never spawns processes, so tests verify command
+arguments and failed activation without touching host connections:
+
+```bash
+QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME=generic QT_QUICK_CONTROLS_STYLE=Basic \
+  /usr/lib/qt6/bin/qmltestrunner -import tests/qml/imports -input tests/qml
+```
+
+The harness covers connecting alongside active profiles, disconnecting one,
+explicitly disconnecting all, and retaining other profiles after a failed
+activation, row toggles, and idempotent IPC connects. Live panel layout and route/DNS behavior still require a desktop
+check after installing the changes.
+
+
+### Compact profile presentation
+
+Independent backends with multiple targets hide the master switch. Keyboard
+navigation uses the same visibility decision, so it cannot focus a hidden
+control. NetworkManager exposes an optional `headline` (connection count) only
+with multiple targets; otherwise the hero falls back to `summary`. Its full
+`summary` remains available for bar tooltips and connection-change detection.
+NetworkManager keeps `details` empty because each target row already shows its
+name, type, and live addresses directly. Rows are ordered by case-insensitive
+name and UUID, never by the active-first order returned by nmcli.
+
+After profile discovery, one read-only `nmcli` call queries runtime
+`GENERAL.UUID,IP4.ADDRESS,IP6.ADDRESS` for the active UUIDs. The parser keeps
+addresses associated with their profile even when two tunnels use the same IP.
+These are device addresses, not remote AllowedIPs or the public exit address.
+Failed reads clear stale addresses but preserve connection state and controls.
+Inactive profiles never display cached addresses. Address text wraps without a
+line cap, so full addresses stay visible without hover. Missing addresses simply
+omit that line; profile rows do not show instructional placeholder text.

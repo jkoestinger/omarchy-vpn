@@ -73,3 +73,30 @@ test("parsePublicIp rejects anything that is not one", () => {
   eq(Shared.parsePublicIp(null), "")
   eq(Shared.parsePublicIp("1.2.3.4".padEnd(50, "0")), "")
 })
+
+test("independent backends survive connects in either direction", () => {
+  const nm = { allowConcurrent: true, connected: true }
+  const other = { connected: true }
+  eq(Shared.conflictsWithBackend(nm, other), false)
+  eq(Shared.conflictsWithBackend(other, nm), false)
+  eq(Shared.conflictsWithBackend(other, other), false)
+  eq(Shared.conflictsWithBackend(other, { connected: true }), true)
+  eq(Shared.conflictsWithBackend(other, { connected: false }), false)
+})
+
+test("independent rows disconnect only themselves while legacy rows connect", () => {
+  const nm = { independentTargets: true, currentKey: "first" }
+  eq(Shared.targetAction(nm, { key: "second", active: true }), "disconnect")
+  eq(Shared.targetAction(nm, { key: "first", active: false }), "connect")
+  eq(Shared.targetAction({}, { key: "second", active: true }), "connect")
+  eq(Shared.targetIsActive({ currentKey: "first" }, { key: "first" }), true)
+  eq(Shared.targetIsActive(nm, { key: "second", active: true }), true)
+})
+
+
+test("master switch is hidden for multiple independent profiles", () => {
+  eq(Shared.showMasterSwitch(null), false)
+  eq(Shared.showMasterSwitch({ independentTargets: true, targets: [{}, {}] }), false)
+  eq(Shared.showMasterSwitch({ independentTargets: true, targets: [{}] }), true)
+  eq(Shared.showMasterSwitch({ independentTargets: false, targets: [{}, {}] }), true)
+})

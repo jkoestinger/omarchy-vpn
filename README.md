@@ -48,9 +48,9 @@ Hover it to see which one.
 Inside the panel:
 
 - **Public IP** sits top-left. Click it to copy it.
-- **The switch** top-right connects or disconnects. Turning one VPN on shuts
-  every other one off first — you never end up with two tunnels fighting over
-  your routes.
+- **The switch** top-right connects or disconnects. NetworkManager shows
+  individual row switches instead when several profiles are available. Other
+  VPN tools retain exclusive switching; NetworkManager profiles are preserved.
 - **The gear** to its left opens the widget's own settings, which for now is one
   switch per tool found on this machine. Turn one off and the widget forgets it
   entirely: no chip, no polling, and it stops counting toward the bar icon. Turn
@@ -259,9 +259,14 @@ tool on this list owns — Mullvad brings up its own WireGuard interface, and
 NetworkManager adopts it, but that belongs on the Mullvad chip and appears only
 there.
 
-Picking a profile takes down whichever one is already up. NetworkManager is
-happy to run two tunnels at once; that is never what clicking a second profile
-means.
+Each profile toggles independently, so multiple split tunnels can stay active
+at once. Rows stay in name order when connections change and show the VPN type,
+this device's live tunnel IPv4/IPv6 addresses, and the gateway when available.
+With multiple profiles, individual row switches replace the master switch.
+
+NetworkManager retains control of routes and DNS. The widget does not change
+profile settings or resolve overlapping routes. A split tunnel does not
+necessarily change the public IP shown at the top of the panel.
 
 A freshly imported OpenVPN profile usually has no credentials saved, and there is no
 password prompt running inside the Omarchy shell. To make a profile connect in

@@ -233,7 +233,7 @@ function nmKindLabel(profile) {
 // the others get `args` to hand to nmcli, because its activation is not an
 // nmcli call. Without the helper an OpenConnect row is still listed and still
 // says what it is, but has nothing to run.
-function nmTargets(profiles, authScript) {
+function nmTargets(profiles, authScript, addresses) {
   var targets = []
   for (var i = 0; i < profiles.length; i++) {
     var profile = profiles[i]
@@ -249,14 +249,8 @@ function nmTargets(profiles, authScript) {
     var target = {
       key: "profile:" + profile.uuid,
       label: profile.name,
-      detail: profile.active
-        ? "Connected"
-        // OpenVPN, VPNC and L2TP keep identity outside their secrets. WireGuard
-        // keeps its keys in the profile, and OpenConnect settles identity with
-        // the gateway, so neither has anything for the user to have left out.
-        : (!needsUsername(profile) || profile.hasUsername
-            ? nmKindLabel(profile) + " profile"
-            : "No username set"),
+      active: profile.active === true,
+      detail: nmProfileDetail(profile, addresses),
       glyph: glyph,
       args: ["connection", "up", "uuid", profile.uuid],
       uuid: profile.uuid,
@@ -310,28 +304,52 @@ function nmEmptyText(tools) {
 }
 
 function nmSummary(profiles) {
+  var names = []
   for (var i = 0; i < profiles.length; i++) {
-    if (profiles[i].active) return profiles[i].name
+    if (profiles[i].active) names.push(profiles[i].name)
   }
+  if (names.length > 0) return names.sort().join(" + ")
   return profiles.length === 0 ? "No profiles" : "Not connected"
 }
 
-function nmDetails(profiles) {
-  var rows = []
-  for (var i = 0; i < profiles.length; i++) {
-    if (!profiles[i].active) continue
-    rows.push(Shared.detail("Profile", profiles[i].name))
-    rows.push(Shared.detail("Type", nmKindLabel(profiles[i])))
-    // Which gateway an interactive or concentrator-backed profile reached,
-    // since an organisation commonly has several and the profile name rarely
-    // says which one.
-    if ((isOpenConnect(profiles[i]) || isVpnc(profiles[i]) || isL2tp(profiles[i]))
-        && profiles[i].gateway) {
-      rows.push(Shared.detail("Gateway", profiles[i].gateway))
+function nmConnectionCount(profiles) {
+  var count = profiles.filter(function(profile) { return profile.active }).length
+  return count === 0 ? "Not connected" : count + (count === 1 ? " profile connected" : " profiles connected")
+}
+
+function nmProfileDetail(profile, addresses) {
+  var text = nmKindLabel(profile)
+  var ips = addresses && addresses[profile.uuid] || []
+  if (profile.active && ips.length) text += "\n" + ips.join("\n")
+  if (!profile.active && needsUsername(profile) && profile.hasUsername === false) text += "\nNo username set"
+  if (profile.gateway) text += "\nGateway: " + profile.gateway
+  return text
+}
+
+// Read runtime addresses, never configured AllowedIPs (those are remote routes).
+// GENERAL.UUID starts a profile block; IPv6 colons use nmcli's normal escaping.
+function parseNmAddresses(raw) {
+  var result = {}
+  var uuid = ""
+  var lines = String(raw || "").split("\n")
+  for (var i = 0; i < lines.length; i++) {
+    var pair = splitNmcliLine(lines[i].trim())
+    if (pair[0] === "GENERAL.UUID") {
+      uuid = pair[1]
+      if (uuid) result[uuid] = []
+    } else if (uuid && /^IP[46]\.ADDRESS(?:\[\d+\])?$/.test(pair[0]) && pair[1] && pair[1] !== "--") {
+      if (result[uuid].indexOf(pair[1]) === -1) result[uuid].push(pair[1])
     }
   }
-  if (rows.length > 0) rows.push(Shared.detail("Managed by", "NetworkManager"))
-  return rows
+  return result
+}
+
+function nmAddressCommand(profiles) {
+  var args = ["nmcli", "-t", "-f", "GENERAL.UUID,IP4.ADDRESS,IP6.ADDRESS", "connection", "show"]
+  for (var i = 0; i < profiles.length; i++) {
+    if (profiles[i].active) args.push("uuid", profiles[i].uuid)
+  }
+  return args.length === 6 ? [] : args
 }
 
 function activeNmProfile(profiles) {
@@ -339,4 +357,34 @@ function activeNmProfile(profiles) {
     if (profiles[i].active) return profiles[i]
   }
   return null
+}
+
+// Activation never includes a teardown: routing policy belongs to each profile.
+function nmActivationCommand(target) {
+  if (target && target.command) return target.command
+  return ["nmcli"].concat((target && target.args) || [])
+}
+
+// Empty UUID means the explicit disconnect-all action. Only listed active VPN
+// profiles are included, never Wi-Fi, Tailscale, or another backend's tunnels.
+function nmDisconnectArgs(profiles, uuid) {
+  var args = ["connection", "down"]
+  for (var i = 0; i < profiles.length; i++) {
+    if (profiles[i].active && (!uuid || profiles[i].uuid === uuid)) {
+      args.push("uuid", profiles[i].uuid)
+    }
+  }
+  return args.length === 2 ? [] : args
+}
+
+// nmcli defaults to active-first ordering, which moves a row under the pointer
+// when it is toggled. Keep a deterministic name/UUID order regardless of status.
+function nmOrderedProfiles(profiles) {
+  return profiles.slice().sort(function(a, b) {
+    var left = String(a.name).toLowerCase()
+    var right = String(b.name).toLowerCase()
+    if (left < right) return -1
+    if (left > right) return 1
+    return a.uuid < b.uuid ? -1 : (a.uuid > b.uuid ? 1 : 0)
+  })
 }

@@ -204,10 +204,23 @@ Item {
     if (backend) backend.refresh()
   }
 
-  // Two tunnels up at once is never what anyone means by "connect". Bringing
-  // one up therefore takes every other backend down first, and the new
-  // connection waits for them so the tools do not fight over the routes.
+  // Single-tunnel tools retain their exclusive switching. Independent backends
+  // opt out and expose per-target disconnects through the same controller.
+  function toggleTarget(backend, target) {
+    if (!backend || backend.busy || !target) return
+    if (Shared.targetAction(backend, target) === "disconnect") {
+      cancelPending()
+      clearNotice()
+      backend.disconnectTarget(target)
+      return
+    }
+    connectVia(backend, target)
+  }
+
+  // IPC connect remains idempotent even though clicking a row toggles it.
   function connectVia(backend, target) {
+    if (!backend || backend.busy || !target) return
+    if (backend.independentTargets === true && target.active === true) return
     runExclusive(backend, function() { backend.connectTo(target) })
   }
 
@@ -303,7 +316,7 @@ Item {
 
   function otherConnected(backend) {
     return availableBackends.filter(function(candidate) {
-      return candidate !== backend && candidate.connected
+      return Shared.conflictsWithBackend(backend, candidate)
     })
   }
 
