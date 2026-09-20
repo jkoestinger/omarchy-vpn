@@ -4,11 +4,11 @@ A VPN widget for the Omarchy bar. One icon shows whether you are behind a
 tunnel; one panel connects, disconnects, and switches between the VPN tools you
 actually have installed.
 
-It supports **Proton VPN**, **Mullvad**, **Windscribe**, **Cloudflare WARP**,
-**AmneziaWG**, and the **OpenVPN**, **WireGuard**, **OpenConnect**, **VPNC** and
-**L2TP/IPsec** profiles NetworkManager holds. Only the tools that have something
-to offer appear — install none and the widget tells you so; have several and a
-chip row lets you switch between them.
+It supports **Proton VPN**, **Mullvad**, **Windscribe**, **ExpressVPN**,
+**Cloudflare WARP**, **AmneziaWG**, and the **OpenVPN**, **WireGuard**,
+**OpenConnect**, **VPNC** and **L2TP/IPsec** profiles NetworkManager holds. Only
+the tools that have something to offer appear — install none and the widget tells
+you so; have several and a chip row lets you switch between them.
 
 <img src="preview.png" alt="The VPN panel open in the Omarchy bar, showing a Proton VPN connection to Zurich and a country list" width="365">
 
@@ -63,15 +63,16 @@ Inside the panel:
   starts closed and stays however you left it until the shell restarts.
 - **The settings** inside are Mullvad's connect-on-startup, lockdown mode, and
   local network sharing, Proton VPN's kill switch, NetShield, and port
-  forwarding, and Windscribe's firewall. They show what the tool itself reports,
-  so changing one from its CLI shows up here on the next poll — the widget keeps
-  no copy and never puts one back for you.
+  forwarding, Windscribe's firewall, and ExpressVPN's Network Lock. They show
+  what the tool itself reports, so changing one from its CLI shows up here on
+  the next poll — the widget keeps no copy and never puts one back for you.
 - **The list** is what you can connect to: for Proton VPN, fastest / P2P /
   random / Secure Core followed by every country; for Mullvad, any location
   followed by every country it has relays in; for Windscribe, best location
-  followed by every region it serves; for AmneziaWG, each local profile; for
-  NetworkManager, your OpenVPN and WireGuard profiles, told apart by their icon.
-  A check mark marks where you are connected.
+  followed by every region it serves; for ExpressVPN, Smart location followed by
+  every country; for AmneziaWG, each local profile; for NetworkManager, your
+  OpenVPN and WireGuard profiles, told apart by their icon. A check mark marks
+  where you are connected.
 
 Keyboard, once the panel is open: `j`/`k` or arrows move — through the header,
 the chips, the name row, the settings switches if they are open, then the list —
@@ -92,6 +93,9 @@ Omarchy with its Quickshell desktop, plus at least one of:
   (`mullvad account login <number>`).
 - **Windscribe** — `windscribe-cli` with the Windscribe app running, logged in
   (`windscribe-cli login`).
+- **ExpressVPN** — the `expressvpnctl` CLI from the ExpressVPN Linux app (v14),
+  signed in (`expressvpnctl login`), with the app running or background mode
+  enabled (`expressvpnctl background enable`).
 - **Cloudflare WARP** — `warp-cli` with `warp-svc` running, the device
   registered (`warp-cli registration new`), and WARP's terms accepted once in a
   terminal.
@@ -111,8 +115,8 @@ Configure these in **Setup › Plugins**, or in the widget's entry in
 |---------|---------|--------------|
 | `refreshIntervalSec` | `15` | How often the connection status is polled |
 | `preferredBackend` | `Auto` | Which tool the panel opens on. `Auto` picks whichever is connected |
-| `favoriteCountries` | `CH,NL,US` | Country codes pinned to the top of the Proton VPN and Mullvad lists. Windscribe has no codes, so it matches names instead — see below |
-| `hiddenBackends` | *(empty)* | Tools the widget ignores entirely: `proton`, `mullvad`, `windscribe`, `warp`, `networkmanager`, `amneziawg`. The gear inside the panel writes this |
+| `favoriteCountries` | `CH,NL,US` | Country codes pinned to the top of the Proton VPN and Mullvad lists. Windscribe and ExpressVPN have no codes, so they match names instead — see below |
+| `hiddenBackends` | *(empty)* | Tools the widget ignores entirely: `proton`, `mullvad`, `windscribe`, `warp`, `expressvpn`, `networkmanager`, `amneziawg`. The gear inside the panel writes this |
 
 ## Mullvad
 
@@ -175,6 +179,36 @@ run while another copy of itself is running, exiting with `Windscribe CLI is
 already running` rather than waiting its turn. The widget serialises its own calls
 and retries the ones that lose the race, so a command you run yourself at a
 terminal costs the panel a moment and nothing more.
+
+## ExpressVPN
+
+`expressvpnctl` is a client for ExpressVPN's daemon, and the daemon only answers
+when the ExpressVPN app is running or background mode is enabled
+(`expressvpnctl background enable`). The chip appears once the CLI can actually
+talk to it; until then the panel says which of the three is missing — signed out,
+background mode, or a status it could not read — instead of listing an empty
+chip. Those lines are clickable and open a terminal running `expressvpnctl login`
+or `expressvpnctl background enable`; activation needs a person at the keyboard,
+so the widget does not do it for you.
+
+The list is one row per country, built from `expressvpnctl get regions`. Clicking
+one connects to a server inside it; **Smart location** hands the choice back to
+ExpressVPN. Cities are searchable even though only countries are listed: typing
+`frankfurt` finds Germany.
+
+Like Windscribe, ExpressVPN names its regions and never prints a country code, so
+`favoriteCountries` matches them by name (`USA`, not `US`). The default `CH,NL,US`
+therefore pins nothing on this chip.
+
+**Network Lock** is ExpressVPN's kill switch, and it is on by default. While it is
+on and the tunnel is down, traffic stays blocked — including the traffic another
+VPN needs to connect. The widget says so before it shuts ExpressVPN down for a
+different tool, but it will not turn Network Lock off on its own. That switch is
+in the panel, or:
+
+```bash
+expressvpnctl set networklock false
+```
 
 ## Cloudflare WARP
 
@@ -348,6 +382,11 @@ come back after a reboot).
 **Windscribe is installed but has no chip.** `windscribe-cli` is a client too.
 The panel says which half is missing — start the Windscribe app, or
 `windscribe-cli login` — and picks the chip up on the next refresh.
+
+**ExpressVPN is installed but has no chip, or its connects fail.** `expressvpnctl`
+needs the ExpressVPN app running, or background mode enabled once with
+`expressvpnctl background enable`. The panel names which of the three is missing;
+after a sign-in or an enable, reopen the panel to re-probe.
 
 **Nothing appears in the bar.** Confirm the plugin is enabled with
 `omarchy plugin list`, then `omarchy restart shell`.
