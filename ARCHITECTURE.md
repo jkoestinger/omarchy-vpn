@@ -16,11 +16,12 @@ surrounding workflow.
 | `ProtonBackend.qml` | Proton VPN, via the `protonvpn` CLI |
 | `MullvadBackend.qml` | Mullvad, via the `mullvad` CLI |
 | `WindscribeBackend.qml` | Windscribe, via `windscribe-cli` |
+| `ExpressVpnBackend.qml` | ExpressVPN, via `expressvpnctl` |
 | `WarpBackend.qml` | Cloudflare WARP, via `warp-cli` |
 | `NetworkManagerBackend.qml` | OpenVPN, WireGuard, OpenConnect, VPNC and L2TP/IPsec, via NetworkManager |
 | `AmneziaWgBackend.qml` | AmneziaWG, via `awg` and `awg-quick` |
 | `model/Shared.js` | Helpers every backend leans on, and the widget's own settings |
-| `model/Proton.js`, `model/Mullvad.js`, `model/Windscribe.js`, `model/Warp.js`, `model/NetworkManager.js`, `model/AmneziaWg.js` | Pure parsing and row-building, one file per tool. No QML, no side effects |
+| `model/Proton.js`, `model/Mullvad.js`, `model/Windscribe.js`, `model/ExpressVpn.js`, `model/Warp.js`, `model/NetworkManager.js`, `model/AmneziaWg.js` | Pure parsing and row-building, one file per tool. No QML, no side effects |
 
 Each backend is a pair: the `.qml` file holds the `Process` plumbing, and the
 matching `model/*.js` holds everything that can be decided without running a
@@ -40,7 +41,7 @@ duck-types, so a backend that omits something simply renders as blank.
 
 | Property | Meaning |
 |----------|---------|
-| `backendId` | Stable key used by settings and IPC (`proton`, `mullvad`, `windscribe`, `warp`, `networkmanager`, `amneziawg`) |
+| `backendId` | Stable key used by settings and IPC (`proton`, `mullvad`, `windscribe`, `warp`, `expressvpn`, `networkmanager`, `amneziawg`) |
 | `label` | Name on the switcher chip and hero. Also what `preferredBackend` stores, so it must match that enum in `manifest.json` exactly |
 | `installNames` | What a user would install to make this backend useful, as a list. The panel joins them into its "install something" line when no tool is detected. Usually one name and the same as `label` — NetworkManager is the exception, offering `["OpenVPN", "WireGuard", "OpenConnect", "VPNC", "L2TP"]`, because nobody installs a connection manager to get a VPN |
 | `glyph` | Nerd Font character for the hero icon |
@@ -295,9 +296,9 @@ they are logic rather than plumbing and they are the part that has been wrong.
 **A status that cannot be read is stale, not empty.** The last reading is kept
 and flagged, never replaced with a blank one, and two things hang on that.
 `detected` follows the login state, so blanking would take the chip away while a
-tunnel is up — and with it the only way to bring that tunnel down, since every
-verb refuses to run undetected. That is the hazard NetworkManagerBackend keeps
-its own stale list to avoid. And a blank status reports the firewall as off:
+tunnel is up — and with it the only way to bring down a tunnel, since every verb
+refuses to run undetected. That is the hazard NetworkManagerBackend keeps its own
+stale list to avoid. And a blank status reports the firewall as off:
 losing contact with the app is exactly when the widget must not start claiming
 that nothing is being blocked.
 
@@ -389,6 +390,34 @@ so the error names the fix, and `setupHint` tells the user to run
 bring up; a registration probe that fails after a good one keeps the device
 listed, so a stopped `warp-svc` shows its error on the chip instead of taking the
 chip away.
+
+**ExpressVPN is a client, with a background mode.** `expressvpnctl` talks to
+ExpressVPN's daemon, and the daemon answers only while the ExpressVPN app is
+running or background mode is enabled — the CLI being present says nothing. So
+the probe that decides `detected` is a real status read, and its two named
+refusals are setup states with hints and commands, not errors: signed out, and
+background mode off. A probe that fails without naming either keeps the last
+verdict, so a stopped daemon mid-session shows its error on the chip instead of
+taking the chip away.
+
+**ExpressVPN's status is prose.** The CLI prints a plain-text block whose lines
+come and go with the state, so `parseExpressStatus` matches on leading keys and
+sentence prefixes rather than line positions, the way Windscribe's parser does.
+An unrecognised block is "no idea": the last reading is kept, and with it the
+chip and the switch that brings the tunnel down.
+
+**Network Lock is read, never owned.** `expressvpnctl set networklock` flips it,
+`expressvpnctl get networklock` reads it back, and the widget stores no copy —
+the same rule every backend's toggles follow. A connect that fails names the
+lockdown state's fix through `describeExpressFailure`, so the panel says
+"enable background mode" rather than echoing a raw refusal.
+
+**Why no `lockdownMode` on ExpressVPN.** Network Lock is on by default and blocks
+traffic when a tunnel drops *unexpectedly*; whether it also blocks after an
+intentional disconnect is the stricter "at all times" mode, and the CLI does not
+say which variant is set. Claiming a block the tool never announced would warn on
+every teardown of an ordinary kill switch, which is worse than the missing
+warning the ambiguity already costs.
 
 **Why OpenVPN, WireGuard, OpenConnect, VPNC and L2TP/IPsec share one backend.**
 Same listing call, same teardown, same secret-agent problem, and no settings of

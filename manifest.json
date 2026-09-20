@@ -14,7 +14,7 @@
   },
   "barWidget": {
     "displayName": "VPN",
-    "description": "Detects installed VPN tools (Proton VPN, Mullvad, Windscribe, AmneziaWG, Cloudflare WARP, and NetworkManager's OpenVPN, WireGuard, OpenConnect, VPNC and L2TP/IPsec profiles) and switches between them from one bar icon.",
+    "description": "Detects installed VPN tools (Proton VPN, Mullvad, Windscribe, ExpressVPN, Cloudflare WARP, AmneziaWG, and NetworkManager's OpenVPN, WireGuard, OpenConnect, VPNC and L2TP/IPsec profiles) and switches between them from one bar icon.",
     "category": "Network",
     "allowMultiple": false,
     "defaultSection": "right",
@@ -45,6 +45,7 @@
           "Mullvad",
           "Windscribe",
           "Cloudflare WARP",
+          "ExpressVPN",
           "NetworkManager",
           "AmneziaWG"
         ],
@@ -70,7 +71,7 @@
         "type": "string",
         "label": "Hidden VPN tools (comma separated)",
         "defaultValue": "",
-        "description": "Tools the widget ignores entirely: proton, mullvad, windscribe, warp, networkmanager, amneziawg. Also editable from the gear inside the panel."
+        "description": "Tools the widget ignores entirely: proton, mullvad, windscribe, warp, expressvpn, networkmanager, amneziawg. Also editable from the gear inside the panel."
       }
     ]
   }
