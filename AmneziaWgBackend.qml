@@ -247,6 +247,11 @@ Item {
   // awg-quick's own directory is scanned alongside the widget's. Its files are
   // normally root-only, so `-r` skips them and the tunnels they start show up
   // through `awg show interfaces` instead; where they are readable, they list.
+  //
+  // NUL bytes are deleted on the way out. awg-quick's `read` drops them too, so
+  // this is the file as awg-quick will see it — and the hook check must not
+  // depend on whether Quickshell keeps such a byte in the stream or cuts the
+  // stream short at it, which would take the hook line with it.
   Process {
     id: listProcess
     running: false
@@ -257,7 +262,7 @@ Item {
       "for f in " + Util.shellQuote(root.profilesDir) + "/*.conf /etc/amnezia/amneziawg/*.conf; do " +
       "  [[ -r \"$f\" ]] || continue; " +
       "  printf \"#awg-profile %s\\n\" \"$f\"; " +
-      "  sed -E 's/^(.*(PrivateKey|PresharedKey)[[:space:]]*=).*$/\\1 [redacted]/I; s/^/\\t/' \"$f\"; " +
+      "  tr -d '\\000' < \"$f\" | sed -E 's/^(.*(PrivateKey|PresharedKey)[[:space:]]*=).*$/\\1 [redacted]/I; s/^/\\t/'; " +
       "done"
     ]
     stdout: StdioCollector { id: listStdout; waitForEnd: true }
