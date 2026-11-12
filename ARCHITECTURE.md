@@ -469,9 +469,12 @@ interface comes up, and a dropped-in `.conf` is exactly how one arrives. The
 check matches awg-quick's own parser — `#` comments out the rest of the line
 wherever it appears, `;` comments out nothing, and matching is case-insensitive
 under its `shopt -s nocasematch` — so `postup = …` is caught and
-`Address = … # PostUp = …` is not a false positive. Where it deliberately
-differs, it is stricter: awg-quick honours these only inside `[Interface]`, and
-this blocks them anywhere.
+`Address = … # PostUp = …` is not a false positive. That parser reads each line
+through bash's `read`, which silently drops NUL bytes, so `Post<NUL>Up` is a
+hook as well: the listing deletes them and the model ignores them, or a hook
+hides behind one. Where the check deliberately differs, it is stricter:
+awg-quick honours these only inside `[Interface]`, and this blocks them
+anywhere.
 
 **An interface that is up always gets a row, config or not.** awg-quick's own
 directory is `/etc/amnezia/amneziawg`, root-owned and unreadable to the user the

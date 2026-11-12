@@ -40,8 +40,12 @@ function parseAwgInterfaces(raw) {
 // matches no directive and is therefore inert. Matching is done under
 // `shopt -s nocasematch`, so `postup =` is every bit as much a hook as
 // `PostUp =`.
+//
+// The line reaches that parser through bash's `read`, which drops NUL bytes
+// without a word, so `Post<NUL>Up =` is a hook to awg-quick. Kept here, the
+// byte made the key "post\0up", and a root hook went through as harmless.
 function confDirective(line) {
-  var stripped = String(line || "").split("#")[0]
+  var stripped = String(line || "").replace(/\u0000/g, "").split("#")[0]
   var eq = stripped.indexOf("=")
   if (eq < 0) return null
   var key = stripped.substring(0, eq).trim()
