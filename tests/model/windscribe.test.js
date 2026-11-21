@@ -374,6 +374,16 @@ test("parseWindscribeStatus reads the 2.25 connection line", () => {
   eq(checking.city, "Toronto")
   eq(checking.interference, false)
 
+  // The help text doesn't say which note comes first, so both orders must work.
+  for (const notes of ["(network interference detected) (checking the connection)",
+                       "(checking the connection) (network interference detected)"]) {
+    const both = Windscribe.parseWindscribeStatus("Login:  Logged in\nConnection:  Connected to Zurich " + notes)
+    eq(both.city, "Zurich")
+    eq(both.interference, true)
+    eq(Windscribe.windscribeCurrentKey(both, Windscribe.windscribeRegions(
+      Windscribe.parseWindscribeLocations("Switzerland - Zurich - Alphorn (10 Gbps)"))), "region:switzerland")
+  }
+
   const going = Windscribe.parseWindscribeStatus("Login:  Logged in\nConnection:  Connecting to Zurich")
   eq(going.state, "connecting")
   eq(Windscribe.windscribeSummary(going), "Connecting to Zurich…")

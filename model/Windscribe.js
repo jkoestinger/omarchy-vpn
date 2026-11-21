@@ -110,12 +110,12 @@ function applyWindscribeConnectState(result, value) {
   // Appended to the connected state when the daemon sees the tunnel struggling:
   // "[Network interference]" before 2.25, "(network interference detected)"
   // after. 2.25 can also append "(checking the connection)", which is not news.
-  var interference = text.match(/^(.*?)\s*(?:\[Network interference\]|\(network interference detected\))$/i)
-  if (interference) {
-    result.interference = true
-    text = interference[1].trim()
+  // The CLI does not document their order, so peel trailing notes in any order.
+  var note
+  while ((note = text.match(/^(.*?)\s*(\[Network interference\]|\(network interference detected\)|\(checking the connection\))$/i))) {
+    if (!/checking/i.test(note[2])) result.interference = true
+    text = note[1].trim()
   }
-  text = text.replace(/\s*\(checking the connection\)$/i, "")
 
   var failure = text.match(/^error\s*:\s*(.+)$/i)
   if (failure) {
