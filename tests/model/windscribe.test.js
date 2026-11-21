@@ -336,3 +336,58 @@ test("windscribeRegions drops a region name that would parse as a flag", () => {
 
   eq(Windscribe.windscribeRegions(locations).map(region => region.name), ["Switzerland"])
 })
+
+// Windscribe 2.25.8, `windscribe-cli status`, verbatim except the IP.
+test("parseWindscribeStatus reads the 2.25 labels", () => {
+  const status = Windscribe.parseWindscribeStatus([
+    "Login:       Logged in",
+    "Connection:  Disconnected",
+    "IP:          203.0.113.7 (public)",
+    "Firewall:    Off",
+    "Data usage:  96.99 MB / 15.00 GB",
+    "Internet:    Available"
+  ].join("\n"))
+  eq(status.loaded, true)
+  eq(status.loggedIn, true)
+  eq(status.state, "disconnected")
+  eq(status.firewallKnown, true)
+  eq(status.firewallOn, false)
+  eq(status.dataUsed, "96.99 MB")
+  eq(status.dataLimit, "15.00 GB")
+  eq(status.statusText, "Disconnected")
+})
+
+// Wording from the 2.25.8 `status` help text.
+test("parseWindscribeStatus reads the 2.25 connection line", () => {
+  const up = Windscribe.parseWindscribeStatus(
+    "Login:       Logged in\nConnection:  Connected to Zurich (network interference detected)\nProtocol:    WireGuard:443\nFirewall:    Always On")
+  eq(up.state, "connected")
+  eq(up.connected, true)
+  eq(up.city, "Zurich")
+  eq(up.interference, true)
+  eq(up.protocol, "WireGuard")
+  eq(up.port, "443")
+  eq(up.firewallAlways, true)
+  eq(Windscribe.windscribeSummary(up), "Zurich · network interference")
+
+  const checking = Windscribe.parseWindscribeStatus("Login:  Logged in\nConnection:  Connected to Toronto (checking the connection)")
+  eq(checking.city, "Toronto")
+  eq(checking.interference, false)
+
+  // The help text doesn't say which note comes first, so both orders must work.
+  for (const notes of ["(network interference detected) (checking the connection)",
+                       "(checking the connection) (network interference detected)"]) {
+    const both = Windscribe.parseWindscribeStatus("Login:  Logged in\nConnection:  Connected to Zurich " + notes)
+    eq(both.city, "Zurich")
+    eq(both.interference, true)
+    eq(Windscribe.windscribeCurrentKey(both, Windscribe.windscribeRegions(
+      Windscribe.parseWindscribeLocations("Switzerland - Zurich - Alphorn (10 Gbps)"))), "region:switzerland")
+  }
+
+  const going = Windscribe.parseWindscribeStatus("Login:  Logged in\nConnection:  Connecting to Zurich")
+  eq(going.state, "connecting")
+  eq(Windscribe.windscribeSummary(going), "Connecting to Zurich…")
+
+  const regions = Windscribe.windscribeRegions(Windscribe.parseWindscribeLocations("Switzerland - Zurich - Alphorn (10 Gbps)"))
+  eq(Windscribe.windscribeCurrentKey(up, regions), "region:switzerland")
+})
