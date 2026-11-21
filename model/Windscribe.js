@@ -15,6 +15,19 @@
 //   Data usage: 96.99 MB / 2.00 GB
 //   Update available: 2.23.11
 //
+// Windscribe 2.25 renamed the labels and reworded the connection line, and
+// prints "Label:  value" padded into a column:
+//
+//   Login:       Logged in
+//   Connection:  Connected to Zurich (network interference detected)
+//   Protocol:    WireGuard:443
+//   IP:          1.2.3.4 (VPN)
+//   Firewall:    Always On
+//   Data usage:  96.99 MB / 15.00 GB
+//   Internet:    Available
+//
+// Both spellings are read, so the widget works on either side of the update.
+//
 // So this matches on the leading key rather than on line position. Two values
 // carry a colon of their own — `Connect state` and `Protocol` — which is why
 // the split is on the first one only.
@@ -51,10 +64,10 @@ function parseWindscribeStatus(raw) {
     var value = line.substring(separator + 1).trim()
     if (value === "") continue
 
-    if (key === "login state") {
+    if (key === "login state" || key === "login") {
       result.loggedIn = /^logged in/i.test(value)
       result.loaded = true
-    } else if (key === "firewall state") {
+    } else if (key === "firewall state" || key === "firewall") {
       // Three spellings, and only the two known ones are believed: reporting a
       // kill switch as off while it is on is the one mistake worth ruling out.
       var firewall = value.toLowerCase()
@@ -65,7 +78,7 @@ function parseWindscribeStatus(raw) {
         result.firewallOn = true
         result.firewallAlways = firewall === "always on"
       }
-    } else if (key === "connect state") {
+    } else if (key === "connect state" || key === "connection") {
       applyWindscribeConnectState(result, value)
       result.loaded = true
     } else if (key === "protocol") {
@@ -94,17 +107,30 @@ function parseWindscribeStatus(raw) {
 function applyWindscribeConnectState(result, value) {
   var text = String(value || "").trim()
 
-  // Appended to the connected state when the daemon sees the tunnel struggling.
-  var interference = text.match(/^(.*?)\s*\[Network interference\]$/i)
+  // Appended to the connected state when the daemon sees the tunnel struggling:
+  // "[Network interference]" before 2.25, "(network interference detected)"
+  // after. 2.25 can also append "(checking the connection)", which is not news.
+  var interference = text.match(/^(.*?)\s*(?:\[Network interference\]|\(network interference detected\))$/i)
   if (interference) {
     result.interference = true
     text = interference[1].trim()
   }
+  text = text.replace(/\s*\(checking the connection\)$/i, "")
 
   var failure = text.match(/^error\s*:\s*(.+)$/i)
   if (failure) {
     result.state = "error"
     result.error = failure[1].trim()
+    return
+  }
+
+  // 2.25 says "Connected to Zurich" — the city alone, no colon, no nickname.
+  var modern = text.match(/^(connecting|connected) to\s+(.+)$/i)
+  if (modern) {
+    result.state = modern[1].toLowerCase()
+    result.connected = result.state === "connected"
+    result.location = modern[2].trim()
+    result.city = result.location
     return
   }
 
